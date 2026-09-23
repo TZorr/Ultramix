@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+     The document type, and nothing else. Everything else in the built
+     Info.plist is generated from build settings (GENERATE_INFOPLIST_FILE);
+     an exported type is an array of dictionaries, which no INFOPLIST_KEY_
+     setting can express.
+
+     At the repository root, not inside Ultramix/, which is a
+     file-system-synchronized group: an Info.plist there would be copied
+     into the bundle's Resources as a second, meaningless plist.
+-->
+<plist version="1.0">
+<dict>
+	<key>CFBundleDocumentTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>Ultramix Mix</string>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>LSHandlerRank</key>
+			<string>Owner</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>TZorr.Ultramix.mix</string>
+			</array>
+		</dict>
+	</array>
+	<key>UTExportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>TZorr.Ultramix.mix</string>
+			<key>UTTypeDescription</key>
+			<string>Ultramix Mix</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.json</string>
+			</array>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>ultramix</string>
+				</array>
+			</dict>
+		</dict>
+	</array>
+</dict>
+</plist>

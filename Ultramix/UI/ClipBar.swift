@@ -1,0 +1,282 @@
+//
+//  ClipBar.swift
+//  Ultramix
+//
+//  The strip under the timeline, in two rows: on top the selected clip - which
+//  track, where it sits, its beatgrid, its lock - how dragging moves clips,
+//  and the mix's length; below, its tempo target, gain, loop, mute and
+//  transition, and a warning when its tempo leaves what the stretcher can do.
+//  With nothing selected, the handful of keys worth knowing.
+//
+
+import SwiftUI
+
+struct ClipBar: View {
+    let session: MixSession
+    let library: Library
+
+    @AppStorage(LoudnessTarget.enabledKey) private var targetEnabled = false
+    @AppStorage(LoudnessTarget.lufsKey) private var targetLUFS = LoudnessTarget.defaultLUFS
+    private var target: Double? { targetEnabled ? LoudnessTarget.clamped(targetLUFS) : nil }
+
+    var body: some View {
+        Group {
+            if session.selection.count == 1, let id = session.selection.first,
+               let clip = session.document.clips.first(where: { $0.id == id }),
+               let track = library.track(clip.trackID) {
+                clipRows(clip, track)
+            } else {
+                VStack(alignment: .leading, spacing: 0) {
+                    HStack(spacing: 12) {
+                        Text(session.selection.isEmpty
+                             ? "Drag tracks from the library onto a lane."
+                             : "\(session.selection.count) clips selected")
+                            .foregroundStyle(.secondary)
+                        columnRule
+                        beatgridButton
+                        columnRule
+                        movePicker
+                        Spacer(minLength: 8)
+                        summaryText
+                    }
+                    .frame(height: Self.rowHeight)
+                    Divider()
+                    HStack {
+                        if session.selection.isEmpty {
+                            Text("Space plays · B splits at the playhead · L loops · M mutes · ← → scroll · ⌥← ⌥→ move a clip a beat · ⌥-drag a tempo point to move it")
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .frame(height: Self.rowHeight)
+                }
+            }
+        }
+        .font(.callout)
+        .padding(.horizontal, 14)
+        .frame(height: 76)
+        .background(.bar)
+    }
+
+    private static let rowHeight: CGFloat = 37.5
+
+    /// Opens the beatgrid of the clip or library track picked last, and
+    /// with the pane already on it, folds it away and back. Lit while the
+    /// pane shows that track.
+    private var beatgridButton: some View {
+        let target = session.beatgridTarget
+        let showing = target != nil && session.beatgridRequest?.id == target && !session.beatgridHidden
+        let name = target.flatMap { library.track($0)?.displayName }
+        return Toggle(isOn: Binding(get: { showing }, set: { _ in session.beatgridButton() })) {
+            Text("Beatgrid")
+        }
+        .toggleStyle(.button)
+        .disabled(target == nil)
+        .help(name.map { "Beatgrid of \($0) - click again to fold it away and back (E)" }
+              ?? "Select a clip, or one track in the library, to edit its beatgrid")
+    }
+
+    private var summaryText: some View {
+        Text(summary)
+            .foregroundStyle(.secondary)
+            .monospacedDigit()
+    }
+
+    /// The name sits over the tempo and is exactly as wide - it is laid over
+    /// an invisible copy of the tempo controls and truncates within them -
+    /// so "Bar one" lines up with Gain whatever the title's length.
+    private func clipRows(_ clip: Clip, _ track: Track) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 12) {
+                HStack(spacing: 12) { tempo(clip, track) }
+                    .hidden()
+                    .disabled(true)
+                    .accessibilityHidden(true)
+                    .overlay(alignment: .leading) {
+                        HStack(spacing: 12) {
+                            Circle().fill(LaneStyle.color(clip.lane, session.document.lanes)).frame(width: 9, height: 9)
+                            Text(track.displayName)
+                                .fontWeight(.medium)
+                                .lineLimit(1)
+                                .help(track.displayName)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                columnRule
+                Text("Bar one at \(barBeat(clip.anchorBeat))")
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+                    .help("Where the track's first downbeat sits on the timeline. ← → move the clip a beat.")
+                beatgridButton
+                columnRule
+                Toggle(isOn: Binding(get: { clip.locked },
+                                     set: { value in session.perform { $0.setLocked(clip.id, value) } })) {
+                    // A fixed box: the open lock is wider than the closed one,
+                    // and everything after the button would shift.
+                    HStack(spacing: 5) {
+                        Image(systemName: clip.locked ? "lock.fill" : "lock.open").frame(width: 14)
+                        Text("Lock")
+                    }
+                }
+                .toggleStyle(.button)
+                .help(clip.locked ? "Locked: the clip cannot be moved and its automation cannot be changed. Click to unlock."
+                                  : "Lock the clip: its place and its automation")
+                columnRule
+                movePicker
+                Spacer(minLength: 8)
+                summaryText
+            }
+            .frame(height: Self.rowHeight)
+            Divider()
+            HStack(spacing: 12) {
+                tempo(clip, track)
+                columnRule
+                controls(clip)
+                Spacer(minLength: 0)
+            }
+            .frame(height: Self.rowHeight)
+        }
+    }
+
+    /// How dragging moves clips - for every clip, so it shows whatever is
+    /// selected.
+    private var movePicker: some View {
+        HStack(spacing: 8) {
+            Text("Move").foregroundStyle(.secondary).fixedSize()
+            Picker("Move", selection: Binding(get: { session.moveMode }, set: { session.moveMode = $0 })) {
+                ForEach(MoveMode.allCases) { Text($0.title).tag($0) }
+            }
+            .pickerStyle(.radioGroup)
+            .horizontalRadioGroupLayout()
+            .labelsHidden()
+            .fixedSize()
+        }
+        .help("What a dragged clip snaps to: Off does not move clips, Free any beat, Half every half bar, Full bar lines. ← → still move a beat.")
+    }
+
+    private var columnRule: some View {
+        Divider().frame(height: 18)
+    }
+
+    /// Under the name: the clip's tempo target.
+    @ViewBuilder
+    private func tempo(_ clip: Clip, _ track: Track) -> some View {
+        let native = track.bpm ?? 0
+        Text("Tempo at its point").foregroundStyle(.secondary)
+        BPMField(value: clip.targetBPM ?? native, fractionDigits: 2, width: 70) { value in
+            session.perform { $0.setTargetBPM(clip.id, abs(value - native) < 0.0005 ? nil : value) }
+        }
+        Button("Native \(String(format: "%.2f", native))") {
+            session.perform { $0.setTargetBPM(clip.id, nil) }
+        }
+        .disabled(clip.targetBPM == nil)
+        .help("Let the mix reach the track's own tempo at this clip")
+    }
+
+    /// Under "Bar one": level, loop and mute, transition.
+    @ViewBuilder
+    private func controls(_ clip: Clip) -> some View {
+        Text("Gain").foregroundStyle(.secondary)
+        Button { session.perform { $0.stepGain(clip.id, by: -1) } } label: {
+            stepIcon("minus")
+        }
+        .disabled(clip.gainDB.rounded() <= Clip.gainRange.lowerBound)
+        .help("Clip gain 1 dB quieter")
+        .accessibilityLabel("Gain down")
+        // A fixed width, so the buttons stay put between "-9 dB" and "-10 dB".
+        Text(Self.gainLabel(clip.gainDB))
+            .monospacedDigit()
+            .frame(width: 46)
+            .help(target.map { "Offset from the \(String(format: "%.1f", $0)) LUFS target, −24 to +12 dB in all; 0 dB plays the clip at the target" }
+                  ?? "The clip's level change, −24 to +12 dB; 0 dB plays it as it is")
+        Button { session.perform { $0.stepGain(clip.id, by: 1) } } label: {
+            stepIcon("plus")
+        }
+        .disabled(clip.gainDB.rounded() >= Clip.gainRange.upperBound)
+        .help("Clip gain 1 dB louder")
+        .accessibilityLabel("Gain up")
+        loudness(clip)
+        Divider().frame(height: 18)
+        Toggle("Loop", isOn: Binding(get: { clip.looping },
+                                     set: { value in session.perform { $0.setLooping(clip.id, value) } }))
+            .toggleStyle(.checkbox)
+        Toggle("Mute", isOn: Binding(get: { clip.muted },
+                                     set: { value in session.perform { $0.setMuted(clip.id, value) } }))
+            .toggleStyle(.checkbox)
+        Divider().frame(height: 18)
+        Menu {
+            ForEach(TransitionStyle.allCases) { style in
+                Button(style.title) { session.autoCrossfade(style) }
+            }
+        } label: {
+            Label(session.transitionStyle.title, systemImage: "arrow.left.arrow.right")
+        } primaryAction: {
+            session.autoCrossfade()
+        }
+        .fixedSize()
+        .help("\(session.transitionStyle.title) over this clip's overlaps with clips on other lanes; the arrow picks another transition")
+        if session.plan?.outOfRange.contains(clip.id) == true {
+            Label("Tempo outside 0.5×–2× of the track", systemImage: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+        }
+    }
+
+    /// Minus is a flat glyph: a button sized by it comes out lower than the
+    /// plus beside it. Both get the same box.
+    private func stepIcon(_ name: String) -> some View {
+        Image(systemName: name).frame(width: 12, height: 12)
+    }
+
+    /// The clip's loudness as it plays, and Match. Worked out on every
+    /// redraw rather than stored: a lookup in the track's profile costs
+    /// microseconds, and it can never be stale after a trim or a gain step.
+    @ViewBuilder
+    private func loudness(_ clip: Clip) -> some View {
+        let grids = session.grids
+        let profiles = library.loudness
+        let target = target
+        let own = ClipLoudness.lufs(clip, grids, { profiles[$0] }, target: target)
+        let reference = session.document.matchReference(for: clip.id, grids: grids)
+        let referenceLUFS = reference.flatMap { ClipLoudness.lufs($0, grids, { profiles[$0] }) }
+        // A fixed width, like the gain, so Match stays put.
+        Text(own.map { String(format: "%.1f LUFS", $0) } ?? "– LUFS")
+            .monospacedDigit()
+            .foregroundStyle(.secondary)
+            .frame(width: 78, alignment: .leading)
+            .help("Integrated loudness of the part of the song this clip plays, with the gain it plays with. The lane's volume, pan and filters are not included.")
+        Button("Match") {
+            session.perform { $0.matchGain(clip.id, grids: grids, loudness: { profiles[$0] }) }
+        }
+        .disabled(own == nil || referenceLUFS == nil || target != nil)
+        .help(matchHelp(reference, referenceLUFS))
+    }
+
+    private func matchHelp(_ reference: Clip?, _ referenceLUFS: Double?) -> String {
+        if target != nil { return "Off while the loudness target is on (Settings)" }
+        guard let reference else { return "Nothing to match: no clip plays into this one or before it" }
+        let name = library.track(reference.trackID)?.displayName ?? "the clip before"
+        guard let referenceLUFS else { return "“\(name)” has not been measured yet" }
+        return "Set the gain, to the whole dB, so this clip is as loud as “\(name)” (\(String(format: "%.1f", referenceLUFS)) LUFS)"
+    }
+
+    /// "0 dB", "-1 dB", "+3 dB": a gain with its sign, so louder and quieter
+    /// read differently at a glance.
+    static func gainLabel(_ dB: Double) -> String {
+        let whole = Int(dB.rounded())
+        return whole == 0 ? "0 dB" : String(format: "%+d dB", whole)
+    }
+
+    /// A timeline beat as bar.beat, counting from 1.1.
+    private func barBeat(_ beat: Int) -> String {
+        let bar = Int((Double(beat) / Double(Clip.beatsPerBar)).rounded(.down))
+        let inBar = beat - bar * Clip.beatsPerBar
+        return "\(bar + 1).\(inBar + 1)"
+    }
+
+    private var summary: String {
+        let seconds = max(0, session.tempo.seconds(atBeat: session.endBeat))
+        let clips = session.document.clips.count
+        return "\(clips) clip\(clips == 1 ? "" : "s") · \(Int(seconds) / 60):\(String(format: "%02d", Int(seconds) % 60))"
+    }
+}
