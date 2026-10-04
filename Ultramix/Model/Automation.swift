@@ -195,11 +195,14 @@ nonisolated struct ClipAutomation: Codable, Sendable, Equatable {
     var lowPass: [AutomationNode] = []
     var highPass: [AutomationNode] = []
     var gestures: [AutomationGesture] = []
+    /// The bars over the transitions written here (TransitionMarks.swift).
+    var transitions: [TransitionMark] = []
 
     init() {}
 
     var isEmpty: Bool {
         volume.isEmpty && pan.isEmpty && lowPass.isEmpty && highPass.isEmpty && gestures.isEmpty
+            && transitions.isEmpty
     }
 
     func nodes(_ kind: AutomationKind) -> [AutomationNode] {
@@ -229,7 +232,7 @@ nonisolated struct ClipAutomation: Codable, Sendable, Equatable {
     /// An old mix's `filter` key is simply not asked for; keyed decoding
     /// passes over it.
     enum CodingKeys: String, CodingKey {
-        case volume, pan, gestures
+        case volume, pan, gestures, transitions
         case lowPass = "lpf", highPass = "hpf"
     }
 
@@ -242,6 +245,7 @@ nonisolated struct ClipAutomation: Codable, Sendable, Equatable {
         if !lowPass.isEmpty { try c.encode(lowPass, forKey: .lowPass) }
         if !highPass.isEmpty { try c.encode(highPass, forKey: .highPass) }
         if !gestures.isEmpty { try c.encode(gestures, forKey: .gestures) }
+        if !transitions.isEmpty { try c.encode(transitions, forKey: .transitions) }
     }
 
     init(from decoder: Decoder) throws {
@@ -253,6 +257,8 @@ nonisolated struct ClipAutomation: Codable, Sendable, Equatable {
         // A gesture of a kind that no longer exists - the old bipolar
         // filter - is dropped, not allowed to fail the whole mix.
         gestures = (try c.decodeIfPresent([Droppable<AutomationGesture>].self, forKey: .gestures) ?? [])
+            .compactMap(\.value)
+        transitions = (try c.decodeIfPresent([Droppable<TransitionMark>].self, forKey: .transitions) ?? [])
             .compactMap(\.value)
     }
 }

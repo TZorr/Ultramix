@@ -228,7 +228,7 @@ struct MixCommands: Commands {
             // Outside the group: with nothing selected they write every
             // transition in the mix.
             Button("Apply \(session?.transitionStyle.title ?? "Crossfade")"
-                   + (session?.selection.isEmpty ?? true ? " to All Transitions" : "")) {
+                   + (session?.selection.isEmpty ?? true && session?.selectedMark == nil ? " to All Transitions" : "")) {
                 session?.autoCrossfade()
             }
             .keyboardShortcut("x", modifiers: [.command, .shift])

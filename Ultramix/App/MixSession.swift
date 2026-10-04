@@ -107,13 +107,24 @@ final class MixSession {
     private(set) var document = MixDocument() {
         // Every change reaches the rows at once, whichever way it came: an
         // edit, undo, or a clip let go of.
-        didSet { if isLive { liveOrder = LiveSet.compacted(liveOrder, before: oldValue, after: document) } }
+        didSet {
+            if isLive { liveOrder = LiveSet.compacted(liveOrder, before: oldValue, after: document) }
+            if let mark = selectedMark, !document.hasMark(mark) { selectedMark = nil }
+        }
     }
     private(set) var fileURL: URL?
     private(set) var isDirty = false
     var selection: Set<UUID> = [] {
-        didSet { if !selection.isEmpty { lastPick = .clips } }
+        didSet {
+            if !selection.isEmpty {
+                lastPick = .clips
+                selectedMark = nil
+            }
+        }
     }
+    /// The transition bar picked in the strip under the ruler. Picking one
+    /// lets go of the clips, so Delete and ⇧⌘X mean the bar.
+    var selectedMark: MarkRef?
     /// Which was picked last, clips on the timeline or a row in the library:
     /// the clip bar's Beatgrid button opens that one's track.
     enum PickSource { case clips, library }
@@ -515,12 +526,52 @@ final class MixSession {
     /// Writes a transition over the overlaps of the selected clips, or over
     /// every transition in the mix when nothing is selected. One undo step.
     /// A style given here becomes the one ⇧⌘X applies next.
+    /// With a transition bar picked, it writes into that bar alone.
     func autoCrossfade(_ style: TransitionStyle? = nil) {
         if let style { transitionStyle = style }
         let chosen = transitionStyle
-        let ids = selection.isEmpty ? nil : selection
         let grids = grids
+        if let mark = selectedMark {
+            perform { try $0.applyStyle(chosen, toMark: mark, grids: grids) }
+            return
+        }
+        let ids = selection.isEmpty ? nil : selection
         perform { try $0.autoCrossfade(ids, style: chosen, grids: grids) }
+    }
+
+    // MARK: - Transition bars
+
+    /// Draws a transition bar and writes the current style there; it is
+    /// picked afterwards.
+    func addMark(from start: Double, to end: Double) {
+        let style = transitionStyle
+        let grids = grids
+        var added: MarkRef?
+        perform { added = try $0.addMark(from: start, to: end, style: style, grids: grids) }
+        if let added {
+            selection = []
+            selectedMark = added
+        }
+    }
+
+    /// One step of a drag on a bar - recorded by `beginGesture`, as every
+    /// drag is. Returns where the bar is now; nil when this step was refused
+    /// and the bar stayed where it was.
+    func moveMark(_ ref: MarkRef, from start: Double, to end: Double) -> MarkRef? {
+        let style = transitionStyle
+        let grids = grids
+        var moved: MarkRef?
+        perform(undoable: false, quiet: true) {
+            moved = try $0.moveMark(ref, from: start, to: end, currentStyle: style, grids: grids)
+        }
+        if let moved, selectedMark == ref { selectedMark = moved }
+        return moved
+    }
+
+    func removeSelectedMark() {
+        guard let mark = selectedMark else { return }
+        let grids = grids
+        perform { try $0.removeMark(mark, grids: grids) }
     }
 
     // MARK: - Lanes

@@ -86,6 +86,10 @@ unless you ask it to.
   point, and the mix ramps between them. The tempo changes only on beat
   boundaries, where the transient hides it, and every clip follows it through
   pitch-preserving time-stretching.
+- **Transition bars** — every transition and beatmix gets a bar in a strip
+  under the ruler, like a cycle range in a DAW. Drag its ends or the whole bar
+  and the transition is written again there; right-click for another style;
+  delete it and every point inside its range goes, on every lane.
 - **Automation** — volume (fader taper), pan, low-pass and high-pass on each
   clip, as exact nodes or as drawn step/sine/triangle gestures. **Rec**
   records the lane knobs into the clip under the playhead while the mix

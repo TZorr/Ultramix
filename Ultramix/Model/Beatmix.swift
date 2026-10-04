@@ -226,6 +226,7 @@ nonisolated extension MixDocument {
             writeFadeOut(index: last.index, start: start, end: end)
         }
         clip.automation.setNodes(.volume, Self.fadeIn(from: Double(draft.leadBeats), beats: beatmix.beats))
+        clip.automation.transitions = [Self.handoverMark(lead: draft.leadBeats, beats: beatmix.beats)]
         if stepTempo { clip.rampStartBeat = clip.tempoAnchorBeat - 1 }
         clips.append(clip)
         return clip.id
@@ -366,6 +367,7 @@ nonisolated extension MixDocument {
             result.writeFadeOut(index: index, start: start, end: end)
         }
         clip.automation.setNodes(.volume, Self.fadeIn(from: Double(draft.leadBeats), beats: beatmix.beats))
+        clip.automation.transitions = [Self.handoverMark(lead: draft.leadBeats, beats: beatmix.beats)]
         result.clips.append(clip)
 
         // The handover into the rest of the mix: the moved clip that comes
@@ -415,6 +417,12 @@ nonisolated extension MixDocument {
             AutomationNode(beat: from, value: dipped(level)),
             AutomationNode(beat: from + Double(beats), value: level),
         ]
+    }
+
+    /// The bar over the handover, on the incoming clip: no style, since a
+    /// beatmix's three points are none of them.
+    static func handoverMark(lead: Int, beats: Int) -> TransitionMark {
+        TransitionMark(start: Double(lead), end: Double(lead + beats), style: nil)
     }
 
     private static func dipped(_ dB: Double) -> Double {

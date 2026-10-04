@@ -151,13 +151,14 @@ nonisolated extension MixDocument {
         for transition in open {
             apply(style, clip: transition.outgoing, from: transition.start, to: transition.end, incoming: false)
             apply(style, clip: transition.incoming, from: transition.start, to: transition.end, incoming: true)
+            setMark(over: transition, style: style)
         }
         return open.count
     }
 
     /// One side of a transition on one clip, every kind. `start` and `end`
     /// are timeline beats.
-    private mutating func apply(_ style: TransitionStyle, clip id: UUID, from start: Double, to end: Double,
+    mutating func apply(_ style: TransitionStyle, clip id: UUID, from start: Double, to end: Double,
                                 incoming: Bool) {
         guard let i = editable(id) else { return }
         let anchor = Double(clips[i].anchorBeat)

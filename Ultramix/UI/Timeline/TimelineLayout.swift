@@ -84,7 +84,11 @@ enum LaneStyle {
 
 struct TimelineLayout {
     static let rulerHeight: CGFloat = 26
+    /// The strip of transition bars, between the ruler and the tempo lane.
+    static let transitionHeight: CGFloat = 18
     static let tempoHeight: CGFloat = 110
+    /// Where the clip lanes begin.
+    static let lanesTop = rulerHeight + transitionHeight + tempoHeight
     /// Room before beat 0, so the first clip's edge can be grabbed.
     static let leadingPad: CGFloat = 12
 
@@ -98,21 +102,32 @@ struct TimelineLayout {
     var laneOrder: [Int] = Array(0..<Clip.laneCount)
 
     var laneHeight: CGFloat {
-        max(44, (size.height - Self.rulerHeight - Self.tempoHeight) / CGFloat(Clip.laneCount))
+        max(44, (size.height - Self.lanesTop) / CGFloat(Clip.laneCount))
+    }
+
+    var transitionRect: CGRect {
+        CGRect(x: 0, y: Self.rulerHeight, width: size.width, height: Self.transitionHeight)
     }
 
     var tempoRect: CGRect {
-        CGRect(x: 0, y: Self.rulerHeight, width: size.width, height: Self.tempoHeight)
+        CGRect(x: 0, y: Self.rulerHeight + Self.transitionHeight, width: size.width, height: Self.tempoHeight)
+    }
+
+    /// A transition bar's box in the strip.
+    func rect(for mark: PlacedMark) -> CGRect {
+        let strip = transitionRect.insetBy(dx: 0, dy: 3)
+        return CGRect(x: x(mark.start), y: strip.minY, width: CGFloat((mark.end - mark.start) * pixelsPerBeat),
+                      height: strip.height)
     }
 
     func laneRect(_ lane: Int) -> CGRect {
         let row = laneOrder.firstIndex(of: lane) ?? lane
-        return CGRect(x: 0, y: Self.rulerHeight + Self.tempoHeight + CGFloat(row) * laneHeight,
+        return CGRect(x: 0, y: Self.lanesTop + CGFloat(row) * laneHeight,
                       width: size.width, height: laneHeight)
     }
 
     func lane(atY y: CGFloat) -> Int? {
-        let offset = y - Self.rulerHeight - Self.tempoHeight
+        let offset = y - Self.lanesTop
         guard offset >= 0 else { return nil }
         let row = Int(offset / laneHeight)
         return row < laneOrder.count ? laneOrder[row] : nil

@@ -2333,6 +2333,112 @@ section("transitions: each style's recipe, and the curve outside stays") {
     check([0.1, 0.5, 0.9].allSatisfy { filter(at($0)) == 1 }, "no Tape filter left after switching to Soft")
 }
 
+section("transition marks: ⇧⌘X and a beatmix leave a bar, a drag draws one") {
+    func mix() -> MixDocument {
+        var doc = MixDocument()
+        try! doc.addClip(trackID: trackA, grid: testGrid, lane: 0, startBeat: 0, grids: grids)
+        try! doc.addClip(trackID: trackB, grid: gridB, lane: 1, startBeat: 200, grids: grids)
+        return doc
+    }
+    var doc = mix()
+    let transition = doc.transitions(grids)[0]
+    try! doc.autoCrossfade(nil, style: .crossfade, grids: grids)
+    var marks = doc.placedMarks(grids)
+    check(marks.count == 1 && marks[0].ref.clip == doc.clips[1].id, "one bar, on the incoming clip: \(marks)")
+    check(near(marks[0].start, transition.start, 1e-9) && near(marks[0].end, transition.end, 1e-9),
+          "the bar covers the overlap: \(marks[0].start)…\(marks[0].end)")
+    check(marks[0].style == .crossfade, "and names its style")
+    try! doc.autoCrossfade(nil, style: .tape, grids: grids)
+    marks = doc.placedMarks(grids)
+    check(marks.count == 1 && marks[0].style == .tape, "another style replaces the bar, not a second one")
+
+    var beatmix = MixDocument()
+    try! beatmix.addClip(trackID: trackA, grid: testGrid, beatmix: .beats16, grids: grids)
+    try! beatmix.addClip(trackID: trackB, grid: gridB, beatmix: .beats16, grids: grids)
+    marks = beatmix.placedMarks(grids)
+    check(marks.count == 1 && marks[0].start == 224 && marks[0].end == 240 && marks[0].style == nil,
+          "a beatmix's bar is its 16 beats, with no style: \(marks)")
+
+    var drawn = mix()
+    try! drawn.addMark(from: 230, to: 210, style: .soft, grids: grids)
+    marks = drawn.placedMarks(grids)
+    check(marks.count == 1 && marks[0].start == 210 && marks[0].end == 230, "drawn either way round: \(marks)")
+    check(clipCurve(drawn, lane: 1, .volume)(210) == Automation.silenceDB
+          && near(clipCurve(drawn, lane: 1, .volume)(230), Automation.defaultVolumeDB, 1e-9),
+          "the style is written over the drawn range")
+    check(clipCurve(drawn, lane: 0, .volume)(230) == Automation.silenceDB, "the outgoing side too")
+    var refused = mix()
+    let untouched = refused
+    check((try? refused.addMark(from: 300, to: 320, style: .soft, grids: grids)) == nil && refused == untouched,
+          "no bar where nothing overlaps")
+    check((try? refused.addMark(from: 210, to: 210.5, style: .soft, grids: grids)) == nil, "nor shorter than a beat")
+}
+
+section("transition marks: moving rewrites the style, deleting clears the range") {
+    var doc = MixDocument()
+    try! doc.addClip(trackID: trackA, grid: testGrid, lane: 0, startBeat: 0, grids: grids)
+    try! doc.addClip(trackID: trackB, grid: gridB, lane: 1, startBeat: 200, grids: grids)
+    let ref = try! doc.addMark(from: 210, to: 230, style: .soft, grids: grids)
+    let moved = try! doc.moveMark(ref, from: 214, to: 234, currentStyle: .crossfade, grids: grids)
+    let marks = doc.placedMarks(grids)
+    check(marks.count == 1 && marks[0].ref == moved && marks[0].start == 214 && marks[0].end == 234
+          && marks[0].style == .soft, "the bar moved and kept its style: \(marks)")
+    let into = clipCurve(doc, lane: 1, .volume)
+    let out = clipCurve(doc, lane: 0, .volume)
+    check(near(into(212), Automation.defaultVolumeDB, 1e-9) && near(out(212), Automation.defaultVolumeDB, 1e-9),
+          "nothing of the old range is left: \(into(212)), \(out(212))")
+    check(into(214) == Automation.silenceDB && near(into(234), Automation.defaultVolumeDB, 1e-9)
+          && out(234) == Automation.silenceDB, "the style is written over the new range")
+    let before = doc
+    check((try? doc.moveMark(moved, from: 300, to: 320, currentStyle: .soft, grids: grids)) == nil && doc == before,
+          "a bar cannot leave the overlap")
+    try! doc.applyStyle(.tape, toMark: moved, grids: grids)
+    check(doc.placedMarks(grids).first?.style == .tape && clipCurve(doc, lane: 0, .lowPass)(234) < 1,
+          "another style in place")
+
+    // Delete: every kind on every clip inside, nothing outside; a movement
+    // across the edge is cut and what follows keeps its rhythm.
+    let anchorA = Double(doc.clips[0].anchorBeat)
+    doc.clips[0].automation.setNodes(.pan, [AutomationNode(beat: 100 - anchorA, value: 0.5),
+                                            AutomationNode(beat: 220 - anchorA, value: -0.5)])
+    let wave = AutomationGesture(kind: .highPass, start: 180 - anchorA, end: 250 - anchorA, shape: .triangle,
+                                 period: 4, low: 0, high: 0.5)
+    doc.clips[0].automation.gestures = [wave]
+    var locked = doc
+    locked.setLocked(moved.clip, true)
+    check((try? locked.removeMark(moved, grids: grids)) == nil, "a locked clip's bar stays")
+    try! doc.removeMark(moved, grids: grids)
+    check(doc.placedMarks(grids).isEmpty, "the bar is gone")
+    for (index, clip) in doc.clips.enumerated() {
+        let anchor = Double(clip.anchorBeat)
+        for kind in AutomationKind.allCases {
+            check(!clip.automation.nodes(kind).contains { $0.beat + anchor >= 214 - 0.02 && $0.beat + anchor <= 234 + 0.02 },
+                  "no \(kind) point left inside on clip \(index)")
+        }
+    }
+    check(doc.clips[0].automation.pan.map { $0.beat + anchorA } == [100], "the pan point outside stays")
+    let pieces = doc.clips[0].automation.gestures.map { ($0.start + anchorA, $0.end + anchorA) }
+    check(pieces.count == 2 && pieces[0].0 == 180 && near(pieces[0].1, 214 - MixDocument.crossfadeGuard, 1e-6)
+          && pieces[1].0 == 236 && pieces[1].1 == 250, "the movement is cut around the range: \(pieces)")
+    if let after = doc.clips[0].automation.gestures.last {
+        check(after.value(at: 241 - anchorA) == wave.value(at: 241 - anchorA), "and keeps its rhythm after it")
+    }
+}
+
+section("transition marks: split, ⌥⌫ and the file") {
+    var doc = MixDocument()
+    try! doc.addClip(trackID: trackA, grid: testGrid, lane: 0, startBeat: 0, grids: grids)
+    try! doc.addClip(trackID: trackB, grid: gridB, lane: 1, startBeat: 200, grids: grids)
+    try! doc.autoCrossfade(nil, grids: grids)
+    let data = try! doc.fileData()
+    check((try? MixDocument.load(from: data)) == doc, "a bar is saved and read back")
+    var split = doc
+    try! split.splitClip(split.clips[1].id, at: 260, grids: grids)
+    check(split.placedMarks(grids).count == 1, "a split leaves one bar, on the half it begins on")
+    try! doc.removeAutomation(onClips: [doc.clips[1].id])
+    check(doc.placedMarks(grids).isEmpty, "⌥⌫ takes the bar with the points")
+}
+
 section("beatmix: three points on the grid, a cut, and a chain across the lanes") {
     var doc = MixDocument()
     let first = try! doc.addClip(trackID: trackA, grid: testGrid, beatmix: .beats16, grids: grids)

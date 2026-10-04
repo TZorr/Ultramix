@@ -7,7 +7,8 @@
 //  provides the scrolling while the drawing only covers what is on screen.
 //
 //  Every pointer interaction is one DragGesture that decides, when it starts,
-//  what it has hold of: the ruler (scrub), a tempo point (up and down for the
+//  what it has hold of: the ruler (scrub), a transition bar (an end, or the
+//  whole; in empty strip a new one), a tempo point (up and down for the
 //  tempo, ⌥ for its position), a clip edge (trim, or extend a loop), a clip
 //  body (move, with everything else selected, across lanes too), an automation
 //  node, or empty lane. The decision is made once, from where the pointer went
@@ -44,6 +45,10 @@ struct TimelinePanel: View {
     @State private var draft: DraftGesture?
     @State private var automationSelection: AutomationSelection?
     @State private var marquee: CGRect?
+    /// A transition bar being drawn in the strip, in timeline beats.
+    @State private var draftMark: ClosedRange<Double>?
+    /// The bar under the pointer, for the right-click menu.
+    @State private var hoveredMark: MarkRef?
     @State private var zoomBase: Double?
     @FocusState private var focused: Bool
     @Environment(\.accent) private var accent
@@ -70,6 +75,12 @@ struct TimelinePanel: View {
         /// becomes a selection rectangle.
         case pendingNode(clip: UUID?, lane: Int, kind: AutomationKind, beat: Double, value: Double)
         case marquee(kind: AutomationKind, origin: CGPoint)
+        /// Pressed in empty transition strip: a drag draws a bar from `start`.
+        case newMark(start: Double)
+        /// Dragging one end of a bar; `fixed` is the other end.
+        case markEdge(ref: MarkRef, edge: ClipEdge, fixed: Double, started: Bool)
+        /// Dragging a whole bar, held `grab` beats from its start.
+        case markMove(ref: MarkRef, grab: Double, length: Double, started: Bool)
         /// Pressed in empty lane with the clip tool: a click seeks there, a
         /// drag does nothing - no rectangle, no scrolling.
         case emptyLane
@@ -87,7 +98,7 @@ struct TimelinePanel: View {
                                             laneOrder: heldOrder ?? session.laneOrder)
                 let snapshot = TimelineSnapshot(session: session, library: library, tool: tool, draft: draft,
                                                 selection: automationSelection, marquee: marquee,
-                                                accent: accent)
+                                                accent: accent, draftMark: draftMark)
                 ScrollView(.horizontal) {
                     Color.clear
                         .frame(width: TimelineLayout.contentWidth(endBeat: session.endBeat, pixelsPerBeat: pixelsPerBeat,
@@ -113,6 +124,7 @@ struct TimelinePanel: View {
                             .gesture(dragGesture(layout, snapshot))
                             .simultaneousGesture(magnifyGesture)
                             .onContinuousHover { phase in hover(phase, layout, snapshot) }
+                            .contextMenu { markMenu }
                             .dropDestination(for: String.self) { items, location in
                                 drop(items, at: location, layout)
                             }
@@ -158,7 +170,12 @@ struct TimelinePanel: View {
         // ⌫ arrives as U+007F while `.delete` is U+0008, so it never
         // matches on its own; ⌦ (U+F728) matches `.deleteForward`.
         .onKeyPress(keys: [.delete, .deleteForward, KeyEquivalent("\u{7F}")]) { press in
-            press.modifiers.contains(.option) ? deleteClipAutomation() : deleteSelected()
+            // A picked transition bar goes first: picking it let go of the clips.
+            if session.selectedMark != nil {
+                session.removeSelectedMark()
+                return .handled
+            }
+            return press.modifiers.contains(.option) ? deleteClipAutomation() : deleteSelected()
         }
         .onKeyPress(.home) {
             session.seek(toBeat: 0)
@@ -314,6 +331,9 @@ struct TimelinePanel: View {
             session.seek(toBeat: max(0, layout.beat(p.x)))
             return .scrub
         }
+        if layout.transitionRect.contains(p) {
+            return beginMark(at: p, layout, snapshot)
+        }
         if layout.tempoRect.contains(p) {
             // DragGesture has no click count; the mouse-down that starts it
             // is still AppKit's current event, and that one does.
@@ -348,6 +368,7 @@ struct TimelinePanel: View {
             return .rampStart(id: clip.id, started: true)
         }
         guard let lane = layout.lane(atY: p.y) else { return .nothing }
+        session.selectedMark = nil
         let beat = layout.beat(p.x)
         if let kind = tool.kind {
             return beginAutomation(lane: lane, kind: kind, beat: beat, at: p, modifiers: modifiers, layout, snapshot)
@@ -498,6 +519,29 @@ struct TimelinePanel: View {
             updateMarquee(kind: kind, from: value.startLocation, to: p, layout, snapshot)
         case .marquee(let kind, let origin):
             updateMarquee(kind: kind, from: origin, to: p, layout, snapshot)
+        case .newMark(let start):
+            guard moved > 3 else { return }
+            let end = snapMark(layout.beat(p.x), layout)
+            draftMark = min(start, end)...max(start, end)
+        case .markEdge(let ref, let edge, let fixed, let started):
+            if !started {
+                guard moved > 1 else { return }
+                session.beginGesture()
+            }
+            // Never shorter than a beat, on whichever side the end belongs.
+            let minimum = MixDocument.minimumMarkBeats
+            let beat = snapMark(layout.beat(p.x), layout)
+            let end = edge == .start ? min(beat, fixed - minimum) : max(beat, fixed + minimum)
+            let now = session.moveMark(ref, from: fixed, to: end) ?? ref
+            self.drag = .markEdge(ref: now, edge: edge, fixed: fixed, started: true)
+        case .markMove(let ref, let grab, let length, let started):
+            if !started {
+                guard moved > 3 else { return }
+                session.beginGesture()
+            }
+            let start = snapMarkStart(layout.beat(p.x) - grab, length: length, layout)
+            let now = session.moveMark(ref, from: start, to: start + length) ?? ref
+            self.drag = .markMove(ref: now, grab: grab, length: length, started: true)
         case .emptyLane, .nothing:
             break
         }
@@ -528,6 +572,9 @@ struct TimelinePanel: View {
         case .marquee:
             marquee = nil
             if automationSelection?.isEmpty == true { automationSelection = nil }
+        case .newMark:
+            if let range = draftMark { session.addMark(from: range.lowerBound, to: range.upperBound) }
+            draftMark = nil
         default:
             break
         }
@@ -582,6 +629,95 @@ struct TimelinePanel: View {
         automationSelection = selection
     }
 
+    // MARK: - Transition bars
+
+    /// A press in the transition strip: on a bar it picks it and holds an
+    /// end or the whole; in empty strip it starts drawing a new one.
+    private func beginMark(at p: CGPoint, _ layout: TimelineLayout, _ snapshot: TimelineSnapshot) -> DragState {
+        guard let mark = markHit(at: p, layout, snapshot) else {
+            session.selectedMark = nil
+            return .newMark(start: snapMark(layout.beat(p.x), layout))
+        }
+        session.selection = []
+        session.selectedMark = mark.ref
+        guard !mark.locked else { return .nothing }
+        let rect = layout.rect(for: mark)
+        let edge = min(6, rect.width / 4)
+        if p.x - rect.minX < edge { return .markEdge(ref: mark.ref, edge: .start, fixed: mark.end, started: false) }
+        if rect.maxX - p.x < edge { return .markEdge(ref: mark.ref, edge: .end, fixed: mark.start, started: false) }
+        return .markMove(ref: mark.ref, grab: layout.beat(p.x) - mark.start, length: mark.end - mark.start,
+                         started: false)
+    }
+
+    /// The bar under the pointer; of two over each other, the shorter.
+    private func markHit(at p: CGPoint, _ layout: TimelineLayout, _ snapshot: TimelineSnapshot) -> PlacedMark? {
+        snapshot.marks
+            .filter { layout.rect(for: $0).insetBy(dx: -3, dy: -3).contains(p) }
+            .min { $0.end - $0.start < $1.end - $1.start }
+    }
+
+    /// How near, in pixels, an end of a bar has to come to stick.
+    static let markMagnet: CGFloat = 8
+
+    /// Where an end of a bar sticks: the edges of an overlap - where the
+    /// incoming clip starts, where the outgoing one ends - before a bar
+    /// line, each within `markMagnet` pixels. Nil when nothing is that near.
+    private func magnet(_ beat: Double, _ layout: TimelineLayout) -> Double? {
+        let reach = Double(Self.markMagnet) / layout.pixelsPerBeat
+        let edges = session.document.transitions(session.grids).flatMap { [$0.start, $0.end] }
+        if let edge = edges.min(by: { abs($0 - beat) < abs($1 - beat) }), abs(edge - beat) <= reach {
+            return edge
+        }
+        let bar = Double(Clip.beatsPerBar)
+        let line = (beat / bar).rounded() * bar
+        return abs(line - beat) <= reach ? line : nil
+    }
+
+    /// An end of a bar: stuck to an overlap edge or a bar line when near
+    /// one, otherwise on the whole beat. ⌘ lets go of all of it and lands
+    /// on sixteenth notes.
+    private func snapMark(_ beat: Double, _ layout: TimelineLayout) -> Double {
+        if NSEvent.modifierFlags.contains(.command) { return (beat * 16).rounded() / 16 }
+        return magnet(beat, layout) ?? beat.rounded()
+    }
+
+    /// The start of a whole bar being moved: whichever end is nearer to
+    /// something it sticks to, decides; the length stays.
+    private func snapMarkStart(_ start: Double, length: Double, _ layout: TimelineLayout) -> Double {
+        if NSEvent.modifierFlags.contains(.command) { return (start * 16).rounded() / 16 }
+        let byStart = magnet(start, layout)
+        let byEnd = magnet(start + length, layout).map { $0 - length }
+        switch (byStart, byEnd) {
+        case let (a?, b?): return abs(a - start) <= abs(b - start) ? a : b
+        case let (a?, nil): return a
+        case let (nil, b?): return b
+        case (nil, nil): return start.rounded()
+        }
+    }
+
+    /// Right-click on a bar: write another style there, or delete it.
+    @ViewBuilder
+    private var markMenu: some View {
+        if let ref = hoveredMark {
+            ForEach(TransitionStyle.allCases) { style in
+                Button(style.title) {
+                    pick(ref)
+                    session.autoCrossfade(style)
+                }
+            }
+            Divider()
+            Button("Delete Transition") {
+                pick(ref)
+                session.removeSelectedMark()
+            }
+        }
+    }
+
+    private func pick(_ ref: MarkRef) {
+        session.selection = []
+        session.selectedMark = ref
+    }
+
     /// Automation lands on sixteenth notes unless ⌘ is held.
     private func snap(_ beat: Double) -> Double {
         NSEvent.modifierFlags.contains(.command) ? beat : (beat * 16).rounded() / 16
@@ -614,7 +750,24 @@ struct TimelinePanel: View {
     private func hover(_ phase: HoverPhase, _ layout: TimelineLayout, _ snapshot: TimelineSnapshot) {
         guard drag == nil else { return }
         guard case .active(let p) = phase else {
+            hoveredMark = nil
             NSCursor.arrow.set()
+            return
+        }
+        let overMark = layout.transitionRect.contains(p) ? markHit(at: p, layout, snapshot) : nil
+        if hoveredMark != overMark?.ref { hoveredMark = overMark?.ref }
+        if layout.transitionRect.contains(p) {
+            if let mark = overMark, !mark.locked {
+                let rect = layout.rect(for: mark)
+                let edge = min(6, rect.width / 4)
+                if p.x - rect.minX < edge || rect.maxX - p.x < edge {
+                    NSCursor.resizeLeftRight.set()
+                } else {
+                    NSCursor.openHand.set()
+                }
+            } else {
+                NSCursor.arrow.set()
+            }
             return
         }
         if layout.tempoRect.contains(p), tempoPoint(near: p.x, layout, snapshot) != nil {
@@ -704,7 +857,7 @@ struct PlayheadOverlay: View {
 /// aborted - every time a working directory opened.
 ///
 /// The rows still line up with the canvas lanes by construction: the column
-/// holds the same ruler and tempo heights at the top and the scroll bar's
+/// holds the same ruler, transition and tempo heights at the top and the scroll bar's
 /// height at the bottom, and the three rows split what is left - the same
 /// arithmetic as `TimelineLayout.laneHeight`.
 struct LaneHeaders: View {
@@ -715,6 +868,13 @@ struct LaneHeaders: View {
     var body: some View {
         VStack(spacing: 0) {
             Color.clear.frame(height: TimelineLayout.rulerHeight)
+            Text("Transitions")
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.leading, 12)
+                .frame(height: TimelineLayout.transitionHeight)
+                .overlay(alignment: .top) { Divider() }
             Text("Tempo")
                 .font(.caption.weight(.medium))
                 .foregroundStyle(.secondary)

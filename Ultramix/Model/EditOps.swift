@@ -374,6 +374,11 @@ nonisolated extension MixDocument {
                          trimStart: clip.trimStart + (split - shape.bodyStart), trimEnd: clip.trimEnd,
                          muted: clip.muted, locked: clip.locked, gainDB: clip.gainDB, automation: clip.automation)
         left.trimEnd += shape.bodyEnd - split
+        // Both halves keep every point, but a transition's bar goes to the
+        // half it begins on - on both it would be drawn twice.
+        let splitLocal = split - Double(clip.anchorBeat)
+        left.automation.transitions.removeAll { $0.start >= splitLocal }
+        right.automation.transitions.removeAll { $0.start < splitLocal }
         // The ramp start goes with whichever point now comes first after it.
         // A split after the original point puts the new point behind it, on
         // flat line: no ramp start needed there. A split before the point

@@ -62,12 +62,21 @@ struct TimelineSnapshot {
     /// Each lane's colour, from the mix - worked out once here, since the
     /// Canvas cannot reach the session.
     var laneColors: [Color]
+    /// The transition bars, the one picked, and one being drawn (timeline
+    /// beats).
+    var marks: [PlacedMark]
+    var selectedMark: MarkRef?
+    var draftMark: ClosedRange<Double>?
 
     init(session: MixSession, library: Library, tool: TimelineTool, draft: DraftGesture?,
-         selection: AutomationSelection? = nil, marquee: CGRect? = nil, accent: Color = .accentColor) {
+         selection: AutomationSelection? = nil, marquee: CGRect? = nil, accent: Color = .accentColor,
+         draftMark: ClosedRange<Double>? = nil) {
         self.selection = selection
         self.marquee = marquee
         self.accent = accent
+        self.draftMark = draftMark
+        selectedMark = session.selectedMark
+        marks = session.document.placedMarks(session.grids)
         let document = session.document
         tempo = session.tempo
         laneColors = (0..<Clip.laneCount).map { LaneStyle.color($0, document.lanes) }
@@ -108,11 +117,13 @@ enum TimelineDrawing {
         background(&context, size, snapshot, layout)
         grid(&context, size, layout)
         ruler(&context, size, layout)
+        transitionStrip(&context, size, snapshot, layout)
         tempoLane(&context, size, snapshot, layout)
         for clip in snapshot.clips {
             self.clip(&context, clip, snapshot.laneColors[clip.lane], size, layout)
         }
         automation(&context, size, snapshot, layout)
+        markSpan(&context, size, snapshot, layout)
     }
 
     // MARK: - Background and grid
@@ -130,8 +141,10 @@ enum TimelineDrawing {
             separators.move(to: CGPoint(x: 0, y: rect.minY))
             separators.addLine(to: CGPoint(x: size.width, y: rect.minY))
         }
-        separators.move(to: CGPoint(x: 0, y: TimelineLayout.rulerHeight))
-        separators.addLine(to: CGPoint(x: size.width, y: TimelineLayout.rulerHeight))
+        for y in [TimelineLayout.rulerHeight, layout.tempoRect.minY] {
+            separators.move(to: CGPoint(x: 0, y: y))
+            separators.addLine(to: CGPoint(x: size.width, y: y))
+        }
         context.stroke(separators, with: .color(Color.primary.opacity(0.12)), lineWidth: 1)
     }
 
@@ -173,7 +186,7 @@ enum TimelineDrawing {
             let visible = layout.visibleBeats
             for beat in max(0, Int(visible.lowerBound))...max(0, Int(visible.upperBound)) where beat % 4 != 0 {
                 let x = layout.x(Double(beat))
-                faint.move(to: CGPoint(x: x, y: top + TimelineLayout.tempoHeight))
+                faint.move(to: CGPoint(x: x, y: TimelineLayout.lanesTop))
                 faint.addLine(to: CGPoint(x: x, y: size.height))
             }
         }
@@ -204,6 +217,68 @@ enum TimelineDrawing {
             }
         }
         context.stroke(ticks, with: .color(Color.primary.opacity(0.35)), lineWidth: 1)
+    }
+
+    // MARK: - Transition bars
+
+    /// The strip under the ruler: a bar per transition, named by its style
+    /// where there is room, the picked one stronger, grips at both ends.
+    private static func transitionStrip(_ context: inout GraphicsContext, _ size: CGSize,
+                                        _ snapshot: TimelineSnapshot, _ layout: TimelineLayout) {
+        let accent = snapshot.accent
+        for mark in snapshot.marks {
+            let rect = layout.rect(for: mark)
+            guard rect.maxX >= 0, rect.minX <= size.width else { continue }
+            let picked = mark.ref == snapshot.selectedMark
+            let shape = Path(roundedRect: rect, cornerRadius: 3)
+            context.fill(shape, with: .color(accent.opacity(mark.locked ? 0.12 : picked ? 0.55 : 0.28)))
+            context.stroke(shape, with: .color(accent.opacity(mark.locked ? 0.3 : picked ? 1 : 0.6)),
+                           lineWidth: picked ? 1.5 : 1)
+            if !mark.locked && rect.width > 14 {
+                var grips = Path()
+                for x in [rect.minX + 3, rect.maxX - 3] {
+                    grips.move(to: CGPoint(x: x, y: rect.minY + 3))
+                    grips.addLine(to: CGPoint(x: x, y: rect.maxY - 3))
+                }
+                context.stroke(grips, with: .color(Color.primary.opacity(0.5)), lineWidth: 1)
+            }
+            let title = context.resolve((mark.locked ? Text("\(Image(systemName: "lock.fill")) \(mark.title)") : Text(mark.title))
+                .font(.system(size: 10, weight: .medium)).foregroundStyle(Color.primary.opacity(0.85)))
+            let titleSize = title.measure(in: CGSize(width: 400, height: rect.height))
+            let left = max(rect.minX, 0) + 8
+            if min(rect.maxX, size.width) - left - 8 >= titleSize.width {
+                context.draw(title, at: CGPoint(x: left, y: rect.midY), anchor: .leading)
+            }
+        }
+        if let draft = snapshot.draftMark {
+            let strip = layout.transitionRect.insetBy(dx: 0, dy: 3)
+            let rect = CGRect(x: layout.x(draft.lowerBound), y: strip.minY,
+                              width: CGFloat((draft.upperBound - draft.lowerBound) * layout.pixelsPerBeat),
+                              height: strip.height)
+            let shape = Path(roundedRect: rect, cornerRadius: 3)
+            context.fill(shape, with: .color(accent.opacity(0.2)))
+            context.stroke(shape, with: .color(accent), style: StrokeStyle(lineWidth: 1, dash: [3, 2]))
+        }
+    }
+
+    /// The picked bar's range down through the lanes, so what it covers -
+    /// and what deleting it would clear - is in sight.
+    private static func markSpan(_ context: inout GraphicsContext, _ size: CGSize,
+                                 _ snapshot: TimelineSnapshot, _ layout: TimelineLayout) {
+        let range = snapshot.draftMark
+            ?? snapshot.marks.first { $0.ref == snapshot.selectedMark }.map { $0.start...$0.end }
+        guard let range else { return }
+        let (x0, x1) = (layout.x(range.lowerBound), layout.x(range.upperBound))
+        guard x1 >= 0, x0 <= size.width else { return }
+        let top = TimelineLayout.lanesTop
+        context.fill(Path(CGRect(x: x0, y: top, width: x1 - x0, height: size.height - top)),
+                     with: .color(snapshot.accent.opacity(0.07)))
+        var edges = Path()
+        for x in [x0, x1] {
+            edges.move(to: CGPoint(x: x, y: layout.transitionRect.maxY))
+            edges.addLine(to: CGPoint(x: x, y: size.height))
+        }
+        context.stroke(edges, with: .color(snapshot.accent.opacity(0.6)), style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
     }
 
     // MARK: - Tempo
