@@ -4,7 +4,7 @@ A native macOS DJ mix editor: build a complete mix on a beat-based timeline
 before the party, hear every transition while you shape it, and bounce the
 finished set to WAV or MP3.
 
-![Ultramix: a three-lane timeline with a tempo ramp and transition bars, the beatgrid editor open, and the clip bar with Key and Fine](screenshot.png)
+![Ultramix: a three-lane timeline with the master tempo locked at 124 BPM and transition bars, the beatgrid editor open, and the clip bar with Key and Fine](screenshot.png)
 
 Swift, SwiftUI and AVFoundation, Apple Silicon only.
 
@@ -88,6 +88,10 @@ unless you ask it to.
   point, and the mix ramps between them. The tempo changes only on beat
   boundaries, where the transient hides it, and every clip follows it through
   pitch-preserving time-stretching.
+- **Master tempo** — type a tempo at the head of the tempo strip and click
+  the lock: the whole mix plays at that one tempo, and every tempo point sits
+  on it; dragging any point moves the master. Unlock, and each point has its
+  own tempo back - the lock never overwrites them.
 - **Key shift** — **Key − / +** in the clip bar plays a clip up to six
   semitones higher or lower, showing the Camelot code of the key it then plays
   in, and **Fine − / +** tunes it in steps of 5 cents, up to 50 either way, for
