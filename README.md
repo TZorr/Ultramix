@@ -82,10 +82,20 @@ unless you ask it to.
 - **Timeline** — three stereo lanes. Clips are pinned by their first
   downbeat and snap to bar lines, so bars stay aligned whatever the intros
   hold. Trim, split, duplicate, loop and mute clips; everything is undoable.
+  The mouse wheel zooms around the pointer (⇧ scrolls sideways), as do a
+  pinch and **+** / **−**.
 - **One tempo map** — each clip sets the tempo the mix reaches at its tempo
   point, and the mix ramps between them. The tempo changes only on beat
   boundaries, where the transient hides it, and every clip follows it through
   pitch-preserving time-stretching.
+- **Key shift** — **Key − / +** in the clip bar plays a clip up to six
+  semitones higher or lower, showing the Camelot code of the key it then plays
+  in, and **Fine − / +** tunes it in steps of 5 cents, up to 50 either way, for
+  a record a little off concert pitch. The length, the beatgrid and every
+  curve stay exactly as they are; only the pitch moves. Each shift is rendered
+  once in the background, a second or two per song, with a Swift port of
+  Signalsmith Stretch, and kept in the cache; until it is ready the clip plays
+  unshifted, and a bounce waits for it.
 - **Transition bars** — every transition and beatmix gets a bar in a strip
   under the ruler, like a cycle range in a DAW. Drag its ends or the whole bar
   and the transition is written again there; right-click for another style;
@@ -127,7 +137,7 @@ changes it later.
   Audio/                  copies of the imported songs
   Mixes/                  saved mixes (.ultramix)
   Bounces/                WAV and MP3 exports
-  Cache/                  decoded audio and waveforms — safe to delete
+  Cache/                  decoded audio, key shifts, waveforms — safe to delete
 ```
 
 Imported songs are **copied** into `Audio/`, and every path is stored
@@ -145,7 +155,9 @@ The decoded audio in `Cache/` is about 10 MB per minute of music. It is kept
 under a size limit (**Settings › Audio Cache**, 5 GB by default): above it,
 the songs used longest ago give their decoded audio back, and it is decoded
 again — in under a second — when a mix, the live set or the library needs
-it. Songs in the open mix and live set are always kept.
+it. Songs in the open mix and live set are always kept. A clip with a key
+shift adds a rendered copy of its song, the same size; it counts towards the
+limit with that song and goes with it.
 
 On a drive with room, **Settings › Library › Keep every song decoded** takes
 the limit away: every song is decoded once and kept, so nothing is decoded and
@@ -217,12 +229,14 @@ to do it, and with `--refresh --all` to have Music read every file again.
 
 Ultramix is © 2026 T'Zorr, MIT — see [LICENSE](LICENSE).
 
-It contains two third-party components, both of which keep their own
+It contains three third-party components, all of which keep their own
 licences and attributions:
 
 - **LAME** (`libmp3lame`), LGPL-2.0, used for MP3 export.
 - **Beat This!** (`small0` weights) as a Core ML model, MIT, used by the
   optional neural beat analyser.
+- **Signalsmith Stretch** and the parts of **Signalsmith Linear** it runs on,
+  MIT, ported to Swift for the key shift.
 
 The full details, copyright holders and licence texts are in
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Keep that file with the
