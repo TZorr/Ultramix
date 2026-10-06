@@ -4,7 +4,8 @@
 //
 //  The strip under the timeline, in two rows: on top the selected clip - which
 //  track, where it sits, its beatgrid, its lock - how dragging moves clips,
-//  and the mix's length; below, its tempo target, gain, key, loop, mute and
+//  and the mix's length; below, its tempo target, gain, key and fine tune,
+//  loop, mute and
 //  transition, and a warning when its tempo leaves what the stretcher can do.
 //  With nothing selected, the handful of keys worth knowing.
 //
@@ -225,8 +226,9 @@ struct ClipBar: View {
     }
 
     /// Semitones up or down, and the key that makes - in Camelot, which is
-    /// what a DJ matches by. A shift plays once it is rendered; until then
-    /// the clip plays as it is, and a spinner says so.
+    /// what a DJ matches by - then the fine tune in cents. A shift plays once
+    /// it is rendered; until then the clip plays as it is, and a spinner says
+    /// so.
     @ViewBuilder
     private func key(_ clip: Clip, _ track: Track) -> some View {
         Text("Key").foregroundStyle(.secondary)
@@ -247,11 +249,33 @@ struct ClipBar: View {
         .disabled(clip.keyShift >= Clip.keyShiftRange.upperBound)
         .help("Play the clip a semitone higher")
         .accessibilityLabel("Key up")
-        if clip.keyShift != 0, library.shifting.contains(Library.ShiftKey(track: clip.trackID, semitones: clip.keyShift)) {
+        Text("Fine").foregroundStyle(.secondary)
+        Button { session.perform { $0.stepFineTune(clip.id, by: -1) } } label: {
+            stepIcon("minus")
+        }
+        .disabled(clip.fineTune <= Clip.fineTuneRange.lowerBound)
+        .help("Tune the clip 5 cents lower")
+        .accessibilityLabel("Fine tune down")
+        Text(Self.fineLabel(clip.fineTune))
+            .monospacedDigit()
+            .frame(width: 46)
+            .help("Cents on top of the key, −50 to +50 in steps of 5 - for a record a little off concert pitch")
+        Button { session.perform { $0.stepFineTune(clip.id, by: 1) } } label: {
+            stepIcon("plus")
+        }
+        .disabled(clip.fineTune >= Clip.fineTuneRange.upperBound)
+        .help("Tune the clip 5 cents higher")
+        .accessibilityLabel("Fine tune up")
+        if !clip.pitch.isNone, library.shifting.contains(Library.ShiftKey(track: clip.trackID, pitch: clip.pitch)) {
             ProgressView()
                 .controlSize(.small)
-                .help("Rendering the key shift; the clip plays unshifted until it is ready")
+                .help("Rendering the pitch shift; the clip plays unshifted until it is ready")
         }
+    }
+
+    /// "+15 ct", or "0 ct" in tune.
+    static func fineLabel(_ cents: Int) -> String {
+        cents == 0 ? "0 ct" : String(format: "%+d ct", cents)
     }
 
     /// "+2 · 10A", or "0" when the clip plays in its own key; the Camelot

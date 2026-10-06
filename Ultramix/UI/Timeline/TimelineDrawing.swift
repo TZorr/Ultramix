@@ -31,7 +31,7 @@ struct ClipDrawItem {
     let looping: Bool
     let outOfRange: Bool
     let gainDB: Double
-    let keyShift: Int
+    let pitch: PitchShift
     let anchorBeat: Int
     /// In the clip's own beats; add `anchorBeat` for the timeline.
     let automation: ClipAutomation
@@ -107,7 +107,7 @@ struct TimelineSnapshot {
                 waveform: library.waveforms[clip.trackID],
                 selected: session.selection.contains(clip.id), muted: clip.muted,
                 locked: clip.locked, looping: clip.looping, outOfRange: outOfRange.contains(clip.id), gainDB: clip.gainDB,
-                keyShift: clip.keyShift, anchorBeat: clip.anchorBeat, automation: clip.automation))
+                pitch: clip.pitch, anchorBeat: clip.anchorBeat, automation: clip.automation))
         }
     }
 }
@@ -417,7 +417,7 @@ enum TimelineDrawing {
         // the title is where a clip that plays quieter says so.
         if clip.gainDB != 0 { title = String(format: "%+.0f dB · ", clip.gainDB) + title }
         // So is a key shift.
-        if clip.keyShift != 0 { title = String(format: "Key %+d · ", clip.keyShift) + title }
+        if !clip.pitch.isNone { title = "Key \(clip.pitch.label) · " + title }
         if clip.looping { title = "∞  " + title }
         if clip.muted { title = "Muted · " + title }
         // Not red alone: a lane can now be red itself, and the warning would

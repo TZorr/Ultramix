@@ -2,7 +2,7 @@
 //  KeyShifter.swift
 //  Ultramix
 //
-//  Changes a track's key by whole semitones without changing its length:
+//  Changes a track's pitch by semitones and cents without changing its length:
 //  every sample stays where it was, so the beatgrid, the cue points and the
 //  stretcher downstream see the same file, only higher or lower. Rendered
 //  once per track and shift into the audio cache (Library) and played from
@@ -189,7 +189,7 @@ nonisolated final class KeyShifter {
     /// Writes `source`, shifted by `semitones`, to `destination` as the
     /// audio cache's interleaved Float32. Written beside it and renamed into
     /// place, so an interrupted render leaves nothing that would map.
-    static func render(_ source: AudioFrames, semitones: Int, to destination: URL) throws {
+    static func render(_ source: AudioFrames, semitones: Float, to destination: URL) throws {
         let temporary = destination.deletingLastPathComponent()
             .appendingPathComponent(".\(destination.lastPathComponent).\(UUID().uuidString).partial")
         guard FileManager.default.createFile(atPath: temporary.path, contents: nil),
@@ -212,11 +212,11 @@ nonisolated final class KeyShifter {
     /// frames in all. Signalsmith's `exact()`, cut into chunks so a whole
     /// track never has to be held twice in memory. Throws CancellationError
     /// between chunks when the task it runs in is cancelled.
-    static func shift(_ samples: UnsafePointer<Float>, frames: Int, channels: Int, semitones: Int,
+    static func shift(_ samples: UnsafePointer<Float>, frames: Int, channels: Int, semitones: Float,
                       sampleRate: Double,
                       write: (UnsafePointer<Float>, Int) throws -> Void) throws {
         let shifter = KeyShifter(channels: channels, sampleRate: sampleRate)
-        shifter.setTransposeSemitones(Float(semitones))
+        shifter.setTransposeSemitones(semitones)
         let seekLength = shifter.inputLatency + shifter.outputLatency
         let chunk = UnsafeMutablePointer<Float>.allocate(capacity: chunkFrames * channels)
         defer { chunk.deallocate() }

@@ -4228,7 +4228,7 @@ section("lane knobs: a CC from a MIDI source reaches the knobs") {
 // MARK: - Key shift
 
 /// `samples` (interleaved stereo) shifted by `semitones`, as the cache gets it.
-func keyShifted(_ samples: [Float], semitones: Int) -> [Float] {
+func keyShifted(_ samples: [Float], semitones: Float) -> [Float] {
     var out: [Float] = []
     out.reserveCapacity(samples.count)
     samples.withUnsafeBufferPointer { input in
@@ -4386,7 +4386,12 @@ section("key shift: in tune, at the same level, in the same place") {
     // off for some notes (+3 cents at +2), which the port reproduces to the
     // hundredth of a hertz - and which is below what anyone hears.
     let sine = stereoSine(440, seconds: 3)
-    for (semitones, hz, original) in [(2, 493.8833, 494.7816), (-3, 369.9944, 370.0073), (6, 622.2540, 622.8948)] {
+    // Fine tunes too: half a semitone, a quarter down, and cents on a key.
+    let cases: [(Float, Double, Double)] = [
+        (2, 493.8833, 494.7816), (-3, 369.9944, 370.0073), (6, 622.2540, 622.8948),
+        (0.5, 452.8930, 453.7522), (-0.25, 433.6918, 433.6246), (2.15, 498.1811, 498.1603),
+    ]
+    for (semitones, hz, original) in cases {
         let y = keyShifted(sine, semitones: semitones)
         check(y.count == sine.count, "\(semitones): length kept")
         let measured = zeroCrossingHz(y, from: 0.5, to: 2.5)
@@ -4480,6 +4485,18 @@ section("key shift: the clip, its file, the plan and the key it makes") {
     var json = String(data: try! JSONEncoder().encode(clip), encoding: .utf8)!
     json = json.replacingOccurrences(of: "\"keyShift\":-3", with: "\"keyShift\":11")
     check(try! JSONDecoder().decode(Clip.self, from: Data(json.utf8)).keyShift == 6, "held to ±6")
+    check(!plain.contains("fineTune"), "no fine tune, no key")
+    clip.fineTune = 15
+    check(try! JSONDecoder().decode(Clip.self, from: try! JSONEncoder().encode(clip)).fineTune == 15, "fine tune round trip")
+    for (stored, loaded) in [(13, 15), (-12, -10), (80, 50), (-51, -50), (2, 0)] {
+        let text = String(data: try! JSONEncoder().encode(clip), encoding: .utf8)!
+            .replacingOccurrences(of: "\"fineTune\":15", with: "\"fineTune\":\(stored)")
+        let got = try! JSONDecoder().decode(Clip.self, from: Data(text.utf8)).fineTune
+        check(got == loaded, "fine tune \(stored) loads as \(loaded), got \(got)")
+    }
+    check(PitchShift(semitones: 2, cents: 15).label == "+2 +15 ct" && PitchShift(semitones: 0, cents: -25).label == "-25 ct"
+          && PitchShift(semitones: -3, cents: 0).label == "-3", "labels")
+    check(PitchShift(semitones: -1, cents: 50).amount == -0.5 && PitchShift.none.isNone, "amount in semitones")
 
     // Steps, split and duplicate.
     let track = UUID()
@@ -4493,8 +4510,18 @@ section("key shift: the clip, its file, the plan and the key it makes") {
     doc.setKeyShift(id, -2)
     let right = try! doc.splitClip(id, at: 32, grids: lookup)
     check(doc.clips.allSatisfy { $0.keyShift == -2 }, "both halves of a split keep the shift")
+    doc.stepFineTune(id, by: 3)
+    check(doc.clips.first { $0.id == id }?.fineTune == 15, "three clicks: 15 cents")
+    for _ in 0..<20 { doc.stepFineTune(id, by: -1) }
+    check(doc.clips.first { $0.id == id }?.fineTune == -50, "stops at −50")
+    doc.setFineTune(id, 22)
+    check(doc.clips.first { $0.id == id }?.fineTune == 20, "typed between steps: onto the nearest")
+    doc.setFineTune(right, 20)
     let copy = try! doc.duplicateClip(right, grids: lookup)
-    check(doc.clips.first { $0.id == copy }?.keyShift == -2, "a copy keeps the shift")
+    check(doc.clips.first { $0.id == copy }.map { $0.keyShift == -2 && $0.fineTune == 20 } == true, "a copy keeps the shift")
+    let halves = try! doc.splitClip(copy, at: 96, grids: lookup)
+    check(doc.clips.first { $0.id == halves }?.fineTune == 20, "a split keeps the fine tune")
+    for c in doc.clips { doc.setFineTune(c.id, 0) }
 
     // The plan plays the shifted audio, and the plain audio until it is there.
     let original = AudioFrames(interleaved: [Float](repeating: 0.1, count: 44_100 * 60 * 2))
@@ -4502,13 +4529,19 @@ section("key shift: the clip, its file, the plan and the key it makes") {
     let waiting = RenderPlan(document: doc, grids: lookup, audio: { _ in original }, generation: 0)
     check(waiting.segments.allSatisfy { $0.audio === original }, "no shift rendered yet: the clip plays as it is")
     let ready = RenderPlan(document: doc, grids: lookup, audio: { _ in original }, generation: 0,
-                           shiftedAudio: { $1 == -2 ? up : nil })
+                           shiftedAudio: { $1 == PitchShift(semitones: -2, cents: 0) ? up : nil })
     check(ready.segments.allSatisfy { $0.audio === up }, "rendered: the shifted file")
     doc.setKeyShift(id, 0)
     let mixed = RenderPlan(document: doc, grids: lookup, audio: { _ in original }, generation: 0,
                            shiftedAudio: { _, _ in up })
-    check(mixed.segments.filter { $0.audio === original }.count == 1 && mixed.segments.filter { $0.audio === up }.count == 2,
+    check(mixed.segments.filter { $0.audio === original }.count == 1
+          && mixed.segments.filter { $0.audio === up }.count == mixed.segments.count - 1,
           "a clip without a shift keeps its plain audio")
+    // A fine tune alone is a shift too, looked up with its cents.
+    doc.setFineTune(id, -25)
+    let detuned = RenderPlan(document: doc, grids: lookup, audio: { _ in original }, generation: 0,
+                             shiftedAudio: { $1 == PitchShift(semitones: 0, cents: -25) ? up : nil })
+    check(detuned.segments.filter { $0.audio === up }.count == 1, "a fine tune without a key shift plays its own render")
 
     // The key it makes.
     let c = MusicalKey(tonic: 0, minor: false), am = MusicalKey(tonic: 9, minor: true)
@@ -4517,15 +4550,23 @@ section("key shift: the clip, its file, the plan and the key it makes") {
     check(am.transposed(by: 7).camelot == "9A", "a fifth up is one step round the wheel")
 
     // The cache file of a shift, and whose it is.
-    let name = CacheSweep.shiftedName(track, semitones: 2)
-    check(name == "\(track.uuidString).k+2.sw1.f32", name)
-    check(CacheSweep.shiftedName(track, semitones: -5).hasSuffix(".k-5.sw1.f32"), "minus sign")
-    check(CacheSweep.shift(in: name).map { $0.id == track && $0.semitones == 2 } == true, "parsed back")
+    let name = CacheSweep.shiftedName(track, pitch: PitchShift(semitones: 2, cents: 0))
+    check(name == "\(track.uuidString).k+2.sw1.f32", "whole semitones keep their old name: \(name)")
+    check(CacheSweep.shiftedName(track, pitch: PitchShift(semitones: -5, cents: 0)).hasSuffix(".k-5.sw1.f32"), "minus sign")
+    check(CacheSweep.shift(in: name).map { $0.id == track && $0.pitch == PitchShift(semitones: 2, cents: 0) } == true, "parsed back")
+    for pitch in [PitchShift(semitones: 2, cents: -15), PitchShift(semitones: 0, cents: 25), PitchShift(semitones: -6, cents: -50)] {
+        let fine = CacheSweep.shiftedName(track, pitch: pitch)
+        check(CacheSweep.shift(in: fine).map { $0.id == track && $0.pitch == pitch } == true, "\(fine) parsed back")
+    }
+    check(CacheSweep.shiftedName(track, pitch: PitchShift(semitones: 0, cents: 25)).hasSuffix(".k0c+25.sw1.f32"), "cents alone")
+    check(CacheSweep.shift(in: "\(track.uuidString).k+2c0.sw1.f32") == nil, "c0 is never written, so not ours")
+    check(CacheSweep.shift(in: "\(track.uuidString).k+2c.sw1.f32") == nil, "no number, no shift")
     check(CacheSweep.shift(in: "\(track.uuidString).k+2.ss1.f32") == nil, "another tag is not ours to play")
     check(CacheSweep.shift(in: "\(track.uuidString).f32") == nil, "the plain audio is not a shift")
     let gone = UUID()
-    let names = [CacheSweep.shiftedName(track, semitones: 1), CacheSweep.shiftedName(gone, semitones: -1),
-                 ".\(CacheSweep.shiftedName(track, semitones: 3)).\(UUID().uuidString).partial"]
+    let names = [CacheSweep.shiftedName(track, pitch: PitchShift(semitones: 1, cents: 0)),
+                 CacheSweep.shiftedName(gone, pitch: PitchShift(semitones: -1, cents: 10)),
+                 ".\(CacheSweep.shiftedName(track, pitch: PitchShift(semitones: 3, cents: 0))).\(UUID().uuidString).partial"]
     check(Set(CacheSweep.orphans(among: names, keeping: [track])) == Set(names[1...]), "a removed track's shifts go")
 }
 

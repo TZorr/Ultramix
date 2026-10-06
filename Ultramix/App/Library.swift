@@ -14,7 +14,7 @@
 //  used first; a track without it is decoded again (`prepare`) when something
 //  asks, and until then `audio(for:)` answers nil and the clip is silent.
 //
-//  A clip with a key shift plays its track rendered at that shift
+//  A clip with a key shift or fine tune plays its track rendered at that pitch
 //  (KeyShifter) into a cache file of its own, one at a time in the
 //  background (`prepareShifts`); until it is there the clip plays unshifted.
 //  Shifts count towards the size limit with their track and go with it.
@@ -126,10 +126,10 @@ final class Library {
     /// two; one at a time leaves room for playback and decoding.
     private static let maxShifters = 1
 
-    /// One track at one key shift.
+    /// One track at one pitch shift.
     struct ShiftKey: Hashable, Sendable {
         var track: UUID
-        var semitones: Int
+        var pitch: PitchShift
     }
 
     private enum ShiftOutcome: Sendable {
@@ -260,12 +260,12 @@ final class Library {
 
     // MARK: - Key shifts
 
-    /// The track's audio shifted by `semitones`, if it has been rendered; the
-    /// plain audio for 0. Nil does not start a render; `prepareShifts` does.
-    func audio(for id: UUID, keyShift semitones: Int) -> AudioFrames? {
-        guard semitones != 0 else { return audio(for: id) }
+    /// The track's audio at a pitch shift, if it has been rendered; the
+    /// plain audio for none. Nil does not start a render; `prepareShifts` does.
+    func audio(for id: UUID, pitch: PitchShift) -> AudioFrames? {
+        guard !pitch.isNone else { return audio(for: id) }
         _ = shifting
-        let key = ShiftKey(track: id, semitones: semitones)
+        let key = ShiftKey(track: id, pitch: pitch)
         if let loaded = shiftedFrames[key] { return loaded }
         let url = shiftedURL(key)
         guard FileManager.default.fileExists(atPath: url.path), let mapped = try? AudioFrames(mapping: url) else { return nil }
@@ -278,13 +278,13 @@ final class Library {
     /// when the mix asks again after the decode.
     func prepareShifts(_ keys: some Sequence<ShiftKey>, first: Bool = false) {
         var missingAudio: [UUID] = []
-        for key in keys where key.semitones != 0 {
+        for key in keys where !key.pitch.isNone {
             guard track(key.track) != nil, !unshiftable.contains(key) else {
                 serveShift(key, nil)
                 continue
             }
             if shiftedFrames[key] != nil || FileManager.default.fileExists(atPath: shiftedURL(key).path) {
-                if shiftWaiters[key] != nil { serveShift(key, audio(for: key.track, keyShift: key.semitones)) }
+                if shiftWaiters[key] != nil { serveShift(key, audio(for: key.track, pitch: key.pitch)) }
                 continue
             }
             guard audio(for: key.track) != nil else {
@@ -319,13 +319,13 @@ final class Library {
     /// Waits until every one of these shifts is rendered; returns those that
     /// could not be.
     func readyShifts(_ keys: Set<ShiftKey>) async -> [ShiftKey] {
-        let wanted = keys.filter { $0.semitones != 0 }
+        let wanted = keys.filter { !$0.pitch.isNone }
         // The plain audio first: a shift is rendered from it.
         let undecoded = Set(await ready(Set(wanted.map(\.track))))
         var missing = wanted.filter { undecoded.contains($0.track) }
         for key in wanted where !undecoded.contains(key.track) {
             let audio = await withCheckedContinuation { continuation in
-                if let audio = self.audio(for: key.track, keyShift: key.semitones) {
+                if let audio = self.audio(for: key.track, pitch: key.pitch) {
                     continuation.resume(returning: Optional(audio))
                 } else {
                     shiftWaiters[key, default: []].append { continuation.resume(returning: $0) }
@@ -356,7 +356,7 @@ final class Library {
             let work = Task.detached(priority: .userInitiated) { () -> ShiftOutcome in
                 guard !FileManager.default.fileExists(atPath: destination.path) else { return .rendered }
                 do {
-                    try KeyShifter.render(source, semitones: key.semitones, to: destination)
+                    try KeyShifter.render(source, semitones: key.pitch.amount, to: destination)
                     return .rendered
                 } catch is CancellationError {
                     return .cancelled
@@ -376,11 +376,11 @@ final class Library {
                     pumpShifts()
                     return
                 }
-                let shifted = track(key.track) == nil ? nil : audio(for: key.track, keyShift: key.semitones)
+                let shifted = track(key.track) == nil ? nil : audio(for: key.track, pitch: key.pitch)
                 if shifted == nil {
                     unshiftable.insert(key)
                     if case .failed(let failure) = outcome, let track = track(key.track) {
-                        lastError = "“\(track.displayName)” could not be shifted by \(key.semitones) semitones: \(failure)"
+                        lastError = "“\(track.displayName)” could not be shifted by \(key.pitch.label): \(failure)"
                     }
                 }
                 serveShift(key, shifted)
@@ -392,7 +392,7 @@ final class Library {
     }
 
     private func shiftedURL(_ key: ShiftKey) -> URL {
-        cacheDirectory.appendingPathComponent(CacheSweep.shiftedName(key.track, semitones: key.semitones))
+        cacheDirectory.appendingPathComponent(CacheSweep.shiftedName(key.track, pitch: key.pitch))
     }
 
     /// The key-shift files in the cache, by track.

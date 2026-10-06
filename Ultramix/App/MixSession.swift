@@ -670,7 +670,7 @@ final class MixSession {
         let gain = clipGain()
         engine.install { generation in
             RenderPlan(document: document, grids: grids, audio: { library.audio(for: $0) }, generation: generation,
-                       gainDB: gain, shiftedAudio: { library.audio(for: $0, keyShift: $1) })
+                       gainDB: gain, shiftedAudio: { library.audio(for: $0, pitch: $1) })
         }
         engine.setLaneMask(laneMask)
         plan = engine.currentPlan
@@ -680,17 +680,17 @@ final class MixSession {
         let missing = document.clips.sorted { $0.anchorBeat < $1.anchorBeat }.map(\.trackID)
             .filter { library.audio(for: $0) == nil }
         if !missing.isEmpty { library.prepare(missing) }
-        // Key shifts likewise; such a clip plays unshifted until its shift is
+        // Pitch shifts likewise; such a clip plays unshifted until its shift is
         // rendered. Called with none too: that is how a shift stepped past
         // or back to 0 is dropped from the queue.
         let shifts = document.clips.sorted { $0.anchorBeat < $1.anchorBeat }
-            .filter { $0.keyShift != 0 }
-            .map { Library.ShiftKey(track: $0.trackID, semitones: $0.keyShift) }
-            .filter { library.audio(for: $0.track, keyShift: $0.semitones) == nil }
+            .filter { !$0.pitch.isNone }
+            .map { Library.ShiftKey(track: $0.trackID, pitch: $0.pitch) }
+            .filter { library.audio(for: $0.track, pitch: $0.pitch) == nil }
         library.prepareShifts(shifts)
     }
 
-    /// Every track the mix plays, decoded, and every key shift rendered - a
+    /// Every track the mix plays, decoded, and every pitch shift rendered - a
     /// bounce has no second chance at a clip whose audio arrives late. False,
     /// with a message, if one cannot be.
     func prepareAudio() async -> Bool {
@@ -701,12 +701,12 @@ final class MixSession {
             message = "Not bounced: the audio of \(names.joined(separator: ", ")) could not be decoded."
             return false
         }
-        let shifts = Set(document.clips.filter { !$0.muted && $0.keyShift != 0 }
-            .map { Library.ShiftKey(track: $0.trackID, semitones: $0.keyShift) })
+        let shifts = Set(document.clips.filter { !$0.muted && !$0.pitch.isNone }
+            .map { Library.ShiftKey(track: $0.trackID, pitch: $0.pitch) })
         let unshifted = await library.readyShifts(shifts)
         guard unshifted.isEmpty else {
             let names = Set(unshifted.compactMap { library.track($0.track)?.displayName }).sorted()
-            message = "Not bounced: the key shift of \(names.joined(separator: ", ")) could not be rendered."
+            message = "Not bounced: the pitch shift of \(names.joined(separator: ", ")) could not be rendered."
             return false
         }
         return true
@@ -903,7 +903,7 @@ final class MixSession {
     func bouncePlan() -> RenderPlan {
         let library = library
         return RenderPlan(document: document, grids: grids, audio: { library.audio(for: $0) }, generation: -1,
-                          gainDB: clipGain(), shiftedAudio: { library.audio(for: $0, keyShift: $1) })
+                          gainDB: clipGain(), shiftedAudio: { library.audio(for: $0, pitch: $1) })
     }
 
     /// The gain each clip plays with: its own, or - with a loudness target

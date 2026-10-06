@@ -119,13 +119,13 @@ nonisolated final class RenderPlan: @unchecked Sendable {
 
     /// - Parameter gainDB: the gain each clip plays with - its own, unless a
     ///   loudness target decides it (see ClipLoudness.effectiveGainDB).
-    /// - Parameter shiftedAudio: a track's audio shifted by some semitones,
-    ///   for clips with a key shift. While a shift is still being rendered
+    /// - Parameter shiftedAudio: a track's audio at a pitch shift, for clips
+    ///   with a key shift or fine tune. While a shift is still being rendered
     ///   the clip plays unshifted rather than not at all; the plan is rebuilt
     ///   when the shift arrives, and a bounce waits for every shift first.
     init(document: MixDocument, grids: GridLookup, audio: (UUID) -> AudioFrames?, generation: Int,
          gainDB: (Clip) -> Double = { $0.gainDB },
-         shiftedAudio: (UUID, Int) -> AudioFrames? = { _, _ in nil }) {
+         shiftedAudio: (UUID, PitchShift) -> AudioFrames? = { _, _ in nil }) {
         self.generation = generation
         let tempo = document.tempoMap(grids)
         self.tempo = tempo
@@ -136,7 +136,7 @@ nonisolated final class RenderPlan: @unchecked Sendable {
         var outOfRange = Set<UUID>()
         for clip in document.clips where !clip.muted {
             guard let grid = grids(clip.trackID), let original = audio(clip.trackID) else { continue }
-            let frames = clip.keyShift == 0 ? original : shiftedAudio(clip.trackID, clip.keyShift) ?? original
+            let frames = clip.pitch.isNone ? original : shiftedAudio(clip.trackID, clip.pitch) ?? original
             let geometry = ClipGeometry(clip: clip, grid: grid)
             let extremes = tempo.bpmExtremes(in: max(0, geometry.start)...max(0, geometry.end))
             if !Self.ratioRange.contains(extremes.min / grid.bpm) || !Self.ratioRange.contains(extremes.max / grid.bpm) {

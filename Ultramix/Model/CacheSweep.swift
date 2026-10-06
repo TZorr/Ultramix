@@ -4,8 +4,9 @@
 //
 //  Which files in the audio cache belong to nobody. Each track owns three
 //  files named by its id - <id>.f32, .wave, .loud - plus one <id>.k±N.sw1.f32
-//  for each key shift it has been played at, and removing a track deletes
-//  them all, but a track can also disappear without being removed. A
+//  (<id>.k±Nc±C.sw1.f32 with a fine tune) for each pitch shift it has been
+//  played at, and removing a track deletes them all, but a track can also
+//  disappear without being removed. A
 //  library that once failed to load came up empty, the tracks were imported
 //  again under new ids, and half a gigabyte was left behind.
 //
@@ -24,19 +25,29 @@ nonisolated enum CacheSweep {
     /// shifts rendered by an older version are never played again.
     static let shiftTag = "sw1"
 
-    /// The cache file of a track shifted by `semitones`: "<id>.k+2.sw1.f32".
-    static func shiftedName(_ id: UUID, semitones: Int) -> String {
-        "\(id.uuidString).k\(semitones > 0 ? "+" : "")\(semitones).\(shiftTag).f32"
+    /// The cache file of a track at a pitch shift: "<id>.k+2.sw1.f32", and
+    /// with a fine tune "<id>.k+2c-15.sw1.f32". Whole semitones keep the
+    /// name they had before there were cents, so their renders stay valid.
+    static func shiftedName(_ id: UUID, pitch: PitchShift) -> String {
+        func signed(_ v: Int) -> String { v > 0 ? "+\(v)" : "\(v)" }
+        let cents = pitch.cents == 0 ? "" : "c\(signed(pitch.cents))"
+        return "\(id.uuidString).k\(signed(pitch.semitones))\(cents).\(shiftTag).f32"
     }
 
-    /// The track and shift a key-shift cache file holds, if `name` is one
+    /// The track and shift a pitch-shift cache file holds, if `name` is one
     /// of the current tag.
-    static func shift(in name: String) -> (id: UUID, semitones: Int)? {
+    static func shift(in name: String) -> (id: UUID, pitch: PitchShift)? {
         let parts = name.split(separator: ".", omittingEmptySubsequences: false)
         guard parts.count == 4, parts[2] == shiftTag, parts[3] == "f32", parts[1].hasPrefix("k"),
-              let id = UUID(uuidString: String(parts[0])),
-              let semitones = Int(parts[1].dropFirst()) else { return nil }
-        return (id, semitones)
+              let id = UUID(uuidString: String(parts[0])) else { return nil }
+        let amounts = parts[1].dropFirst().split(separator: "c", omittingEmptySubsequences: false)
+        guard (1...2).contains(amounts.count), let semitones = Int(amounts[0]) else { return nil }
+        var cents = 0
+        if amounts.count == 2 {
+            guard let c = Int(amounts[1]), c != 0 else { return nil }
+            cents = c
+        }
+        return (id, PitchShift(semitones: semitones, cents: cents))
     }
 
     /// The names among `names` that can be deleted, given the ids of the
