@@ -248,26 +248,24 @@
 			buildSettings = {
 				ARCHS = arm64;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				GCC_PREPROCESSOR_DEFINITIONS = (
-					"$(inherited)",
-					"HAVE_CONFIG_H=1",
-				);
-				HEADER_SEARCH_PATHS = (
-					"$(SRCROOT)/Ultramix/LAME",
-					"$(SRCROOT)/Ultramix/LAME/vector",
-				);
-				OTHER_CFLAGS = "-w";
-				COREML_CODEGEN_LANGUAGE = None;
-				SWIFT_OBJC_BRIDGING_HEADER = "Ultramix/Ultramix-Bridging-Header.h";
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
+				COREML_CODEGEN_LANGUAGE = None;
 				CURRENT_PROJECT_VERSION = 2;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_FILE_ACCESS_MUSIC_FOLDER = readonly;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readwrite;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"HAVE_CONFIG_H=1",
+				);
 				GENERATE_INFOPLIST_FILE = YES;
+				HEADER_SEARCH_PATHS = (
+					"$(SRCROOT)/Ultramix/LAME",
+					"$(SRCROOT)/Ultramix/LAME/vector",
+				);
 				INFOPLIST_FILE = Info.plist;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "Copyright © 2026 T'Zorr";
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -275,6 +273,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MARKETING_VERSION = 1.1;
+				OTHER_CFLAGS = "-w";
 				PRODUCT_BUNDLE_IDENTIFIER = TZorr.Ultramix;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -282,6 +281,7 @@
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
 				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OBJC_BRIDGING_HEADER = "Ultramix/Ultramix-Bridging-Header.h";
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
 			};
@@ -292,26 +292,24 @@
 			buildSettings = {
 				ARCHS = arm64;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				GCC_PREPROCESSOR_DEFINITIONS = (
-					"$(inherited)",
-					"HAVE_CONFIG_H=1",
-				);
-				HEADER_SEARCH_PATHS = (
-					"$(SRCROOT)/Ultramix/LAME",
-					"$(SRCROOT)/Ultramix/LAME/vector",
-				);
-				OTHER_CFLAGS = "-w";
-				COREML_CODEGEN_LANGUAGE = None;
-				SWIFT_OBJC_BRIDGING_HEADER = "Ultramix/Ultramix-Bridging-Header.h";
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
+				COREML_CODEGEN_LANGUAGE = None;
 				CURRENT_PROJECT_VERSION = 2;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_FILE_ACCESS_MUSIC_FOLDER = readonly;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readwrite;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"HAVE_CONFIG_H=1",
+				);
 				GENERATE_INFOPLIST_FILE = YES;
+				HEADER_SEARCH_PATHS = (
+					"$(SRCROOT)/Ultramix/LAME",
+					"$(SRCROOT)/Ultramix/LAME/vector",
+				);
 				INFOPLIST_FILE = Info.plist;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "Copyright © 2026 T'Zorr";
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -319,6 +317,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MARKETING_VERSION = 1.1;
+				OTHER_CFLAGS = "-w";
 				PRODUCT_BUNDLE_IDENTIFIER = TZorr.Ultramix;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -326,6 +325,7 @@
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
 				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OBJC_BRIDGING_HEADER = "Ultramix/Ultramix-Bridging-Header.h";
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
 			};
