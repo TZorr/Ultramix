@@ -17,6 +17,13 @@
 //  The playhead moves only when it is put somewhere on purpose: a click in
 //  empty lane, the ruler, Home.
 //
+//  The mouse wheel zooms around the pointer (WheelZoom). A horizontal
+//  ScrollView has no use for vertical wheel deltas, so they are taken from
+//  the event stream before it sees them - only while the pointer is over the
+//  timeline and no drag is under way; ⇧ (scroll sideways) and ⌃ (the
+//  system's zoom) pass through, and so does a sideways trackpad swipe.
+//
+//
 //  A drag is one undo step, recorded when it actually starts moving something,
 //  not on mouse-down: a click that selects a clip must not leave an empty step
 //  on the undo stack.
@@ -50,12 +57,26 @@ struct TimelinePanel: View {
     /// The bar under the pointer, for the right-click menu.
     @State private var hoveredMark: MarkRef?
     @State private var zoomBase: Double?
+    /// The wheel's state - a reference, so that tracking the pointer does not
+    /// redraw the timeline on every move.
+    @State private var wheel = WheelState()
     @FocusState private var focused: Bool
     @Environment(\.accent) private var accent
 
     /// Wide enough for the lane's name, M/S and its two knobs side by side -
     /// under each other they would need twice the lowest lane height.
     static let headerWidth: CGFloat = 180
+
+    private final class WheelState {
+        /// Where the pointer is over the timeline, in view coordinates; nil
+        /// when it is elsewhere.
+        var pointer: CGPoint?
+        var monitor: Any?
+        /// The beat under the pointer, held between quick wheel events.
+        var anchor: (beat: Double, point: CGPoint, time: Date)?
+        /// Set just before a wheel zoom, taken by the zoom's onChange.
+        var pending: (beat: Double, x: CGFloat)?
+    }
 
     private enum DragState {
         case scrub
@@ -141,7 +162,14 @@ struct TimelinePanel: View {
                 .onAppear { viewportWidth = geometry.size.width }
                 .onChange(of: geometry.size.width) { _, width in viewportWidth = width }
                 .onChange(of: pixelsPerBeat) { old, new in
-                    keepPlayheadInPlace(old: old, new: new, width: geometry.size.width)
+                    if let anchor = wheel.pending {
+                        wheel.pending = nil
+                        scrollPosition.scrollTo(x: CGFloat(WheelZoom.scrollX(
+                            keeping: anchor.beat, at: Double(anchor.x), pixelsPerBeat: new,
+                            leadingPad: Double(TimelineLayout.leadingPad))))
+                    } else {
+                        keepPlayheadInPlace(old: old, new: new, width: geometry.size.width)
+                    }
                 }
                 // The live set moved back by whole bars (see LiveSet); scroll
                 // back by as much, so what is on screen stays where it was.
@@ -163,6 +191,18 @@ struct TimelinePanel: View {
         .focusable()
         .focused($focused)
         .focusEffectDisabled()
+        .onAppear {
+            guard wheel.monitor == nil else { return }
+            // Local monitors are called on the main thread, as the view is.
+            wheel.monitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
+                wheelZoom(event)
+            }
+        }
+        .onDisappear {
+            if let monitor = wheel.monitor { NSEvent.removeMonitor(monitor) }
+            wheel.monitor = nil
+            wheel.pointer = nil
+        }
         .onKeyPress(.space) {
             session.togglePlay()
             return .handled
@@ -285,6 +325,36 @@ struct TimelinePanel: View {
                                     TransportBar.zoomRange.upperBound)
             }
             .onEnded { _ in zoomBase = nil }
+    }
+
+    /// A wheel event over the timeline zooms around the pointer and goes no
+    /// further; anything else is handed on untouched.
+    private func wheelZoom(_ event: NSEvent) -> NSEvent? {
+        guard let point = wheel.pointer, drag == nil else { return event }
+        let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        guard !modifiers.contains(.shift), !modifiers.contains(.control),
+              abs(event.scrollingDeltaY) > abs(event.scrollingDeltaX) else { return event }
+        // The glide after a flick on a trackpad or Magic Mouse would carry
+        // the zoom on long after the fingers left: swallowed instead.
+        guard event.momentumPhase.isEmpty else { return nil }
+        let factor = WheelZoom.factor(deltaY: Double(event.scrollingDeltaY),
+                                      precise: event.hasPreciseScrollingDeltas,
+                                      inverted: event.isDirectionInvertedFromDevice)
+        let zoomed = min(max(pixelsPerBeat * factor, TransportBar.zoomRange.lowerBound),
+                         TransportBar.zoomRange.upperBound)
+        guard zoomed != pixelsPerBeat else { return nil }
+        let now = Date()
+        let beat: Double
+        if let held = wheel.anchor, now.timeIntervalSince(held.time) < WheelZoom.anchorHold,
+           abs(held.point.x - point.x) <= 1, abs(held.point.y - point.y) <= 1 {
+            beat = held.beat
+        } else {
+            beat = Double(point.x + scrollX - TimelineLayout.leadingPad) / pixelsPerBeat
+        }
+        wheel.anchor = (beat, point, now)
+        wheel.pending = (beat, point.x)
+        pixelsPerBeat = zoomed
+        return nil
     }
 
     /// Zoom keeps the playhead where it is on screen - or, when the playhead
@@ -748,6 +818,7 @@ struct TimelinePanel: View {
     }
 
     private func hover(_ phase: HoverPhase, _ layout: TimelineLayout, _ snapshot: TimelineSnapshot) {
+        if case .active(let p) = phase { wheel.pointer = p } else { wheel.pointer = nil }
         guard drag == nil else { return }
         guard case .active(let p) = phase else {
             hoveredMark = nil

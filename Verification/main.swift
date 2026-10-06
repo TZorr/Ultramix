@@ -4225,6 +4225,28 @@ section("lane knobs: a CC from a MIDI source reaches the knobs") {
     defaults.removePersistentDomain(forName: "ultramix.verify.midi")
 }
 
+// MARK: - Wheel zoom
+
+section("wheel zoom: a line is 1.2×, the hand decides the direction, the beat stays put") {
+    check(near(WheelZoom.factor(deltaY: 1, precise: false, inverted: false), 1.2, 1e-12), "one notch away: 1.2× in")
+    check(near(WheelZoom.factor(deltaY: -1, precise: false, inverted: false), 1 / 1.2, 1e-12), "one notch back: out")
+    check(near(WheelZoom.factor(deltaY: -1, precise: false, inverted: true), 1.2, 1e-12),
+          "natural scrolling turns the delta round, not the zoom")
+    check(near(WheelZoom.factor(deltaY: 40, precise: true, inverted: false), 1.2, 1e-12), "40 points on a trackpad are a notch")
+    check(near(WheelZoom.factor(deltaY: 10, precise: true, inverted: false), pow(1.2, 0.25), 1e-12), "and 10 a quarter of one")
+    check(near(WheelZoom.factor(deltaY: 25, precise: false, inverted: false), pow(1.2, 4), 1e-12), "a fast spin: four lines at most")
+    check(near(WheelZoom.factor(deltaY: -1000, precise: true, inverted: false), pow(1.2, -4), 1e-12), "the same zooming out")
+    check(WheelZoom.factor(deltaY: 0, precise: true, inverted: false) == 1, "no delta, no zoom")
+
+    // Beat 100 under x = 400 at 8 px a beat; zoomed to 9.6 it is still there.
+    let pad = Double(12)
+    let before = 100 * 8 + pad - 400
+    let after = WheelZoom.scrollX(keeping: 100, at: 400, pixelsPerBeat: 9.6, leadingPad: pad)
+    check(near((400 + after - pad) / 9.6, 100, 1e-9), "beat under the pointer after: \((400 + after - pad) / 9.6)")
+    check(after > before, "zooming in scrolls on so the beat stays")
+    check(WheelZoom.scrollX(keeping: 1, at: 600, pixelsPerBeat: 4, leadingPad: pad) == 0, "never before the start")
+}
+
 // MARK: - Key shift
 
 /// `samples` (interleaved stereo) shifted by `semitones`, as the cache gets it.

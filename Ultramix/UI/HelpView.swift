@@ -165,6 +165,7 @@ struct HelpView: View {
                 ("Click or drag the ruler", "Move the playhead."),
                 ("Click a lane's colour bar", "Choose the lane's colour: a swatch, or any colour from the colour well. It is saved with the mix and undoable."),
                 ("Pinch", "Zoom."),
+                ("Mouse wheel", "Zoom around the pointer: away from you zooms in, towards you out. ⇧ with the wheel scrolls sideways, as before; on a trackpad a sideways swipe scrolls, an up or down swipe zooms."),
             ])
             HelpHeading("Keys")
             HelpKeys([
