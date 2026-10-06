@@ -120,6 +120,10 @@ nonisolated final class KeyShifter {
 
     private let channelBands: UnsafeMutablePointer<Band>
     private let predictions: UnsafeMutablePointer<Prediction>
+    /// How far each band's phase turns in one interval. The same every
+    /// block, so worked out once - by the original's own running product,
+    /// which it repeats per channel and block, so the values are its values.
+    private let rotations: UnsafeMutablePointer<ShiftComplex>
     private let energy: UnsafeMutablePointer<Float>
     private let smoothedEnergy: UnsafeMutablePointer<Float>
     private let outputMap: UnsafeMutablePointer<PitchMapPoint>
@@ -143,6 +147,14 @@ nonisolated final class KeyShifter {
         channelBands.initialize(repeating: Band(), count: bands * channels)
         predictions = .allocate(capacity: bands * channels)
         predictions.initialize(repeating: Prediction(), count: bands * channels)
+        rotations = .allocate(capacity: bands)
+        var rot = ShiftComplex.polar(stft.binToFreq(0) * Float(interval) * Float(2 * Double.pi))
+        let freqStep = stft.binToFreq(1) - stft.binToFreq(0)
+        let rotStep = ShiftComplex.polar(freqStep * Float(interval) * Float(2 * Double.pi))
+        for b in 0..<bands {
+            (rotations + b).initialize(to: rot)
+            rot = ShiftComplex.mul(rot, rotStep)
+        }
         energy = .allocate(capacity: bands)
         energy.initialize(repeating: 0, count: bands)
         smoothedEnergy = .allocate(capacity: bands)
@@ -160,6 +172,7 @@ nonisolated final class KeyShifter {
         channelBands.deallocate()
         predictions.deinitialize(count: bands * channels)
         predictions.deallocate()
+        rotations.deallocate()
         energy.deallocate()
         smoothedEnergy.deallocate()
         outputMap.deallocate()
@@ -505,13 +518,10 @@ nonisolated final class KeyShifter {
             // The previous block's phases, moved on by one interval.
             for c in 0..<channels {
                 let bins = channelBands + c * bands
-                var rot = ShiftComplex.polar(bandToFreq(0) * Float(interval) * Float(2 * Double.pi))
-                let freqStep = bandToFreq(1) - bandToFreq(0)
-                let rotStep = ShiftComplex.polar(freqStep * Float(interval) * Float(2 * Double.pi))
                 for b in 0..<bands {
+                    let rot = rotations[b]
                     bins[b].output = ShiftComplex.mul(bins[b].output, rot)
                     bins[b].prevInput = ShiftComplex.mul(bins[b].prevInput, rot)
-                    rot = ShiftComplex.mul(rot, rotStep)
                 }
             }
         }
