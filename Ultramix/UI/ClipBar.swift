@@ -164,15 +164,24 @@ struct ClipBar: View {
     @ViewBuilder
     private func tempo(_ clip: Clip, _ track: Track) -> some View {
         let native = track.bpm ?? 0
+        // Under a locked master the point's own tempo is kept but not heard;
+        // changing it there would be an edit nobody can hear.
+        let master = session.document.masterLocked ? session.document.masterBPM : nil
         Text("Tempo at its point").foregroundStyle(.secondary)
         BPMField(value: clip.targetBPM ?? native, fractionDigits: 2, width: 70) { value in
             session.perform { $0.setTargetBPM(clip.id, abs(value - native) < 0.0005 ? nil : value) }
         }
+        .disabled(master != nil)
         Button("Native \(String(format: "%.2f", native))") {
             session.perform { $0.setTargetBPM(clip.id, nil) }
         }
-        .disabled(clip.targetBPM == nil)
+        .disabled(clip.targetBPM == nil || master != nil)
         .help("Let the mix reach the track's own tempo at this clip")
+        if let master {
+            Image(systemName: "lock.fill")
+                .foregroundStyle(.secondary)
+                .help(String(format: "Master tempo is locked at %.2f BPM. Unlock it at the tempo strip to change this point.", master))
+        }
     }
 
     /// Under "Bar one": level, key, loop and mute, transition.

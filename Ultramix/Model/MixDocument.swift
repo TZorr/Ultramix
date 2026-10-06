@@ -56,6 +56,12 @@ nonisolated struct MixDocument: Codable, Sendable, Equatable {
     /// set moves it, and a live set is never saved, so it is not in the
     /// file: a mix read from disk always starts its clock at 0.
     var timeOrigin: Double = 0
+    /// The master tempo: while locked, the whole mix plays at this one tempo
+    /// and every clip's tempo point is ignored - not changed, so unlocking
+    /// brings each point back as it was. Remembered while unlocked, so a
+    /// tempo can be typed first and locked after.
+    var masterBPM: Double?
+    var masterLocked = false
 
     init(projectBPM: Double = 124) {
         self.projectBPM = projectBPM
@@ -66,7 +72,19 @@ nonisolated struct MixDocument: Codable, Sendable, Equatable {
 
     // MARK: - Tempo
 
+    /// The map the mix plays: flat at the master tempo while it is locked,
+    /// the clips' tempo points otherwise.
     func tempoMap(_ grids: GridLookup) -> TempoMap {
+        if masterLocked, let masterBPM {
+            return TempoMap(projectBPM: masterBPM, targets: [], originSeconds: timeOrigin)
+        }
+        return clipTempoMap(grids)
+    }
+
+    /// The map the clips' tempo points make, master tempo or not. For edits
+    /// that write a tempo into the clips: written from the master, it would
+    /// still be there after unlocking.
+    func clipTempoMap(_ grids: GridLookup) -> TempoMap {
         let targets = clips.compactMap { clip -> TempoPoint? in
             guard let grid = grids(clip.trackID) else { return nil }
             return TempoPoint(beat: Double(clip.tempoAnchorBeat), bpm: clip.targetBPM ?? grid.bpm,
@@ -85,7 +103,7 @@ nonisolated struct MixDocument: Codable, Sendable, Equatable {
     // MARK: - File
 
     enum CodingKeys: String, CodingKey {
-        case format, version, projectBPM, clips, lanes, tracks
+        case format, version, projectBPM, clips, lanes, tracks, masterBPM, masterLocked
     }
 
     func encode(to encoder: Encoder) throws {
@@ -96,6 +114,8 @@ nonisolated struct MixDocument: Codable, Sendable, Equatable {
         try c.encode(clips, forKey: .clips)
         try c.encode(lanes, forKey: .lanes)
         try c.encode(tracks, forKey: .tracks)
+        try c.encodeIfPresent(masterBPM, forKey: .masterBPM)
+        if masterLocked { try c.encode(true, forKey: .masterLocked) }
     }
 
     init(from decoder: Decoder) throws {
@@ -115,6 +135,8 @@ nonisolated struct MixDocument: Codable, Sendable, Equatable {
         while lanes.count < Clip.laneCount { lanes.append(LaneSettings()) }
         self.lanes = Array(lanes.prefix(Clip.laneCount))
         tracks = try c.decodeIfPresent([TrackReference].self, forKey: .tracks) ?? []
+        masterBPM = try c.decodeIfPresent(Double.self, forKey: .masterBPM)
+        masterLocked = try c.decodeIfPresent(Bool.self, forKey: .masterLocked) ?? false
         clips = clips.filter { (0..<Clip.laneCount).contains($0.lane) }
     }
 

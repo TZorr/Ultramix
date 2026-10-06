@@ -214,6 +214,7 @@ struct HelpView: View {
                 ("Double-click a ◆", "Remove it: the ramp runs from the previous point again."),
                 ("Tempo field (bottom)", "Type the tempo for the selected clip's point, then **Set** or Return."),
                 ("Native", "Go back to the track's own tempo."),
+                ("Master (lock)", "Left of the tempo strip. Type a tempo and lock it: the whole mix plays at that one tempo, and every point shows it. Dragging any point then moves the master. Unlock, and each point has its own tempo back. Locking while a live set plays is refused, like any edit that would change what has played."),
             ])
             HelpText("A ramp start belongs to its clip and moves with it.")
             HelpText("A clip is marked when the mix asks it to play below half or above double its own tempo - beyond what stretching does well.")
@@ -420,6 +421,7 @@ struct HelpView: View {
                 ("⇧-drag", "Change tempo, 0.01 BPM per point"),
                 ("⌥-drag", "Move the tempo point"),
                 ("Double-click a point", "Reset to the track's own tempo"),
+                ("Drag a point, master locked", "Change the master tempo"),
                 ("Click", "Set a ramp start ◆"),
                 ("Double-click a ◆", "Remove the ramp start"),
             ])

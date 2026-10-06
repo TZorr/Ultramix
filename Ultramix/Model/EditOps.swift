@@ -366,7 +366,9 @@ nonisolated extension MixDocument {
         guard split - shape.bodyStart >= Clip.minimumBeats, shape.bodyEnd - split >= Clip.minimumBeats else {
             throw EditError("Split inside the clip, away from its edges.")
         }
-        let onLine = tempoMap(grids).bpm(atBeat: split)
+        // The clips' tempo, not a locked master's: written into both
+        // halves, the master would stay behind after unlocking.
+        let onLine = clipTempoMap(grids).bpm(atBeat: split)
         var left = clip
         var right = Clip(trackID: clip.trackID, lane: clip.lane, anchorBeat: clip.anchorBeat,
                          tempoAnchorBeat: clip.tempoAnchorBeat, targetBPM: clip.targetBPM,
@@ -447,6 +449,19 @@ nonisolated extension MixDocument {
     mutating func setTargetBPM(_ id: UUID, _ bpm: Double?) {
         guard let i = index(of: id) else { return }
         clips[i].targetBPM = bpm.map { min(max($0, TempoMap.bpmRange.lowerBound), TempoMap.bpmRange.upperBound) }
+    }
+
+    /// Sets the master tempo, heard at once if it is locked.
+    mutating func setMasterBPM(_ bpm: Double) {
+        masterBPM = min(max(bpm, TempoMap.bpmRange.lowerBound), TempoMap.bpmRange.upperBound)
+    }
+
+    /// Locks the whole mix to the master tempo, or lets the clips' tempo
+    /// points play again. Locking with no master tempo set yet takes
+    /// `fallbackBPM` - the tempo playing at the playhead, so nothing jumps.
+    mutating func setMasterLocked(_ locked: Bool, fallbackBPM: Double) {
+        if locked, masterBPM == nil { setMasterBPM(fallbackBPM) }
+        masterLocked = locked
     }
 
     /// Moves a clip's tempo point to the bar nearest `beat`, kept inside the

@@ -637,6 +637,75 @@ section("split: whole beat, tempo line unchanged") {
     check(worst < 1e-9, "tempo map changed by the split: \(worst)")
 }
 
+section("master tempo: locks the whole mix flat, gives every point back unlocked") {
+    var doc = MixDocument()
+    let a = try! doc.addClip(trackID: trackA, grid: testGrid, lane: 0, startBeat: 0, grids: grids)
+    let b = try! doc.addClip(trackID: trackB, grid: gridB, lane: 1, startBeat: 200, grids: grids)
+    doc.setTargetBPM(a, 122)
+    let pointA = Double(doc.clips[0].tempoAnchorBeat)
+    let pointB = Double(doc.clips[1].tempoAnchorBeat)
+    let unlocked = doc.tempoMap(grids)
+    check(near(unlocked.bpm(atBeat: pointA), 122, 1e-9) && near(unlocked.bpm(atBeat: pointB), 128, 1e-9),
+          "points before locking: \(unlocked.bpm(atBeat: pointA)) / \(unlocked.bpm(atBeat: pointB))")
+
+    // No master yet: locking takes the fallback, the tempo at the playhead.
+    doc.setMasterLocked(true, fallbackBPM: 125)
+    check(doc.masterBPM == 125 && doc.masterLocked, "locked at the fallback: \(String(describing: doc.masterBPM))")
+    let locked = doc.tempoMap(grids)
+    for beat in [0, pointA, pointA + 37.5, pointB, 1000] {
+        check(near(locked.bpm(atBeat: beat), 125, 1e-9), "flat at 125 on beat \(beat): \(locked.bpm(atBeat: beat))")
+    }
+    // 125 beats at 125 BPM: one minute.
+    check(near(locked.seconds(atBeat: 125), 60, 1e-9), "125 beats in 60 s: \(locked.seconds(atBeat: 125))")
+    check(doc.clips[0].targetBPM == 122 && doc.clips[1].targetBPM == nil, "the points themselves untouched")
+    check(near(doc.clipTempoMap(grids).bpm(atBeat: pointB), 128, 1e-9), "the clips' map ignores the master")
+
+    // A live set must refuse it while playing: the clock moves.
+    var open = doc
+    open.masterLocked = false
+    check(LiveSet.clockMoved(doc, old: open, playhead: pointB, grids: grids), "locking moves the clock")
+
+    // Split under the lock writes the clips' tempo, not the master.
+    var split = doc
+    split.setMasterBPM(140)
+    let onLine = unlocked.bpm(atBeat: 100)
+    let right = try! split.splitClip(a, at: 100.4, grids: grids)
+    let rightClip = split.clips.first { $0.id == right }!
+    check(rightClip.targetBPM.map { near($0, onLine, 1e-9) } == true && abs(onLine - 140) > 1,
+          "split writes \(onLine), not the master: \(String(describing: rightClip.targetBPM))")
+    split.setMasterLocked(false, fallbackBPM: 99)
+    var drift = 0.0
+    for beat in stride(from: 0.0, to: pointB + 40, by: 0.37) {
+        drift = max(drift, abs(split.tempoMap(grids).seconds(atBeat: beat) - unlocked.seconds(atBeat: beat)))
+    }
+    check(drift < 1e-9, "a split under the lock leaves the unlocked line as it was: \(drift)")
+
+    // Unlocked: every point back, the master remembered.
+    doc.setMasterLocked(false, fallbackBPM: 99)
+    let back = doc.tempoMap(grids)
+    drift = 0
+    for beat in stride(from: 0.0, to: pointB + 40, by: 0.37) {
+        drift = max(drift, abs(back.seconds(atBeat: beat) - unlocked.seconds(atBeat: beat)))
+    }
+    check(drift < 1e-9 && doc.masterBPM == 125, "unlocked: the old line (\(drift)), master kept")
+    doc.setMasterLocked(true, fallbackBPM: 99)
+    check(doc.masterBPM == 125, "locking again keeps the typed master, not the fallback")
+
+    doc.setMasterBPM(500)
+    check(doc.masterBPM == 300, "clamped high: \(String(describing: doc.masterBPM))")
+    doc.setMasterBPM(10)
+    check(doc.masterBPM == 40, "clamped low: \(String(describing: doc.masterBPM))")
+
+    // The file keeps both; a mix without them opens unlocked.
+    doc.setMasterBPM(125)
+    let read = try! MixDocument.load(from: try! doc.fileData())
+    check(read.masterLocked && read.masterBPM == 125, "read back locked at 125")
+    let plain = String(data: try! MixDocument().fileData(), encoding: .utf8)!
+    check(!plain.contains("master"), "nothing written without a master")
+    let old = try! MixDocument.load(from: try! MixDocument().fileData())
+    check(!old.masterLocked && old.masterBPM == nil, "a mix without a master opens unlocked")
+}
+
 section("ramp start: bars, before its point, travels with its clip, keeps the line through a split") {
     var doc = MixDocument()
     let b = try! doc.addClip(trackID: trackB, grid: gridB, lane: 1, startBeat: 100, grids: grids)

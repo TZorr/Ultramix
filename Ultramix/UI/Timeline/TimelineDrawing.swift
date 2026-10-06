@@ -51,6 +51,8 @@ struct DraftGesture {
 struct TimelineSnapshot {
     var clips: [ClipDrawItem] = []
     var tempo: TempoMap
+    /// The master tempo while it is locked: every tempo point sits on it.
+    var master: Double?
     var curves: [LanePlan]
     var laneMask: Int
     var tool: TimelineTool
@@ -80,6 +82,7 @@ struct TimelineSnapshot {
         marks = session.document.placedMarks(session.grids)
         let document = session.document
         tempo = session.tempo
+        master = document.masterLocked ? document.masterBPM : nil
         laneColors = (0..<Clip.laneCount).map { LaneStyle.color($0, document.lanes) }
         laneMask = session.laneMask
         self.tool = tool
@@ -300,7 +303,7 @@ enum TimelineDrawing {
         for clip in snapshot.clips {
             let px = layout.x(Double(clip.tempoAnchorBeat))
             guard px > -20, px < layout.size.width + 20 else { continue }
-            let bpm = clip.targetBPM ?? clip.sourceBPM
+            let bpm = snapshot.master ?? clip.targetBPM ?? clip.sourceBPM
             low = min(low, bpm)
             high = max(high, bpm)
         }
@@ -336,7 +339,8 @@ enum TimelineDrawing {
 
         // Ramp starts first, under the points: a diamond on the line where the
         // climb to a clip's tempo point begins, in the clip's lane colour.
-        for clip in snapshot.clips {
+        // None under a locked master: nothing climbs.
+        for clip in snapshot.clips where snapshot.master == nil {
             guard let start = clip.rampStartBeat else { continue }
             let sx = layout.x(Double(start))
             guard sx > -8, sx < size.width + 8 else { continue }
@@ -368,7 +372,7 @@ enum TimelineDrawing {
         for clip in snapshot.clips {
             let px = layout.x(Double(clip.tempoAnchorBeat))
             guard px > -12, px < size.width + 12 else { continue }
-            let bpm = clip.targetBPM ?? clip.sourceBPM
+            let bpm = snapshot.master ?? clip.targetBPM ?? clip.sourceBPM
             let label = context.resolve(Text(String(format: "%.2f", bpm)).font(.system(size: 9.5, weight: .medium)).monospacedDigit())
             let point = TempoLabels.Point(x: px, y: tempoY(bpm, scale: scale, layout: layout), size: label.measure(in: size))
             points.append((clip, bpm, label, point))
@@ -378,7 +382,7 @@ enum TimelineDrawing {
             let point = CGPoint(x: item.point.x, y: item.point.y)
             let color = snapshot.laneColors[item.clip.lane]
             let dot = Path(ellipseIn: CGRect(x: point.x - 5, y: point.y - 5, width: 10, height: 10))
-            context.fill(dot, with: .color(item.clip.targetBPM == nil ? Color(nsColor: .windowBackgroundColor) : color))
+            context.fill(dot, with: .color(item.clip.targetBPM == nil && snapshot.master == nil ? Color(nsColor: .windowBackgroundColor) : color))
             context.stroke(dot, with: .color(color), lineWidth: item.clip.selected ? 2.2 : 1.4)
             guard slot != .hidden else { continue }
             let rect = TempoLabels.rect(slot, for: item.point)

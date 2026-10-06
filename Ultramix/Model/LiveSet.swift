@@ -169,7 +169,9 @@ nonisolated enum LiveSet {
         result.clips = document.clips.filter { !gone.contains($0.id) }
         // Also at a shift of 0: a played clip's tempo point on beat 0 was
         // the opening tempo, and the project tempo has to take it over.
-        result.projectBPM = map.bpm(atBeat: Double(shift))
+        // From the clips' own map: under a locked master the played map is
+        // flat, and the clips' tempo would be lost when it is unlocked.
+        result.projectBPM = document.clipTempoMap(grids).bpm(atBeat: Double(shift))
         result.timeOrigin = map.seconds(atBeat: Double(shift))
         for index in result.clips.indices {
             result.clips[index].anchorBeat -= shift

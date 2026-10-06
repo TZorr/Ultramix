@@ -85,6 +85,9 @@ struct TimelinePanel: View {
         case trim(id: UUID, edge: ClipEdge, started: Bool)
         case tempo(id: UUID, origin: Double, startY: CGFloat, started: Bool)
         case tempoAnchor(id: UUID)
+        /// Dragging any tempo point while the master tempo is locked: they
+        /// all sit on the master, so the drag moves the master.
+        case master(origin: Double, startY: CGFloat, started: Bool)
         /// Dragging the diamond where a clip's tempo ramp begins. `started`
         /// once the drag has recorded its undo step.
         case rampStart(id: UUID, started: Bool)
@@ -408,6 +411,13 @@ struct TimelinePanel: View {
             // DragGesture has no click count; the mouse-down that starts it
             // is still AppKit's current event, and that one does.
             let doubleClick = (NSApp.currentEvent?.clickCount ?? 1) >= 2
+            // Under a locked master only the up-and-down drag means
+            // anything; the points' own tempo, place and ramp are not heard.
+            if let master = snapshot.master {
+                guard let clip = tempoPoint(near: p.x, layout, snapshot) else { return .nothing }
+                session.selection = [clip.id]
+                return .master(origin: master, startY: p.y, started: false)
+            }
             if let clip = tempoPoint(near: p.x, layout, snapshot) {
                 session.selection = [clip.id]
                 if doubleClick {
@@ -554,6 +564,15 @@ struct TimelinePanel: View {
             let perPixel = NSEvent.modifierFlags.contains(.shift) ? 0.01 : 0.1
             let bpm = ((origin + Double(startY - p.y) * perPixel) * 100).rounded() / 100
             session.perform(undoable: false, quiet: true) { $0.setTargetBPM(id, bpm) }
+        case .master(let origin, let startY, let started):
+            if !started {
+                guard abs(value.translation.height) > 2 else { return }
+                session.beginGesture()
+                self.drag = .master(origin: origin, startY: startY, started: true)
+            }
+            let perPixel = NSEvent.modifierFlags.contains(.shift) ? 0.01 : 0.1
+            let bpm = ((origin + Double(startY - p.y) * perPixel) * 100).rounded() / 100
+            session.perform(undoable: false, quiet: true) { $0.setMasterBPM(bpm) }
         case .rampStart(let id, let started):
             if !started {
                 guard moved > 2 else { return }
@@ -845,7 +864,7 @@ struct TimelinePanel: View {
             NSCursor.resizeUpDown.set()
             return
         }
-        if layout.tempoRect.contains(p), rampHandle(near: p.x, layout, snapshot) != nil {
+        if layout.tempoRect.contains(p), snapshot.master == nil, rampHandle(near: p.x, layout, snapshot) != nil {
             NSCursor.resizeLeftRight.set()
             return
         }
@@ -931,6 +950,38 @@ struct PlayheadOverlay: View {
 /// holds the same ruler, transition and tempo heights at the top and the scroll bar's
 /// height at the bottom, and the three rows split what is left - the same
 /// arithmetic as `TimelineLayout.laneHeight`.
+/// The tempo strip's header: its name, and the master tempo - a lock that
+/// holds the whole mix at one tempo, and the tempo it holds.
+struct MasterTempoHeader: View {
+    let session: MixSession
+    @Environment(\.accent) private var accent
+
+    var body: some View {
+        let document = session.document
+        let locked = document.masterLocked
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Tempo")
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.secondary)
+            Toggle(isOn: Binding(get: { locked }, set: { on in
+                let here = session.tempo.bpm(atBeat: max(0, session.playheadBeat()))
+                session.perform { $0.setMasterLocked(on, fallbackBPM: here) }
+            })) {
+                Label("Master", systemImage: locked ? "lock.fill" : "lock.open")
+                    .foregroundStyle(locked ? accent : Color.secondary)
+            }
+            .toggleStyle(.button)
+            .help(locked
+                  ? "Master tempo locked: the whole mix plays at this tempo. Click to unlock - every tempo point goes back to its own tempo."
+                  : "Lock the whole mix to the master tempo. The tempo points keep their own tempo and get it back when unlocked.")
+            BPMField(value: document.masterBPM ?? document.projectBPM, fractionDigits: 2, width: 70) { value in
+                session.perform { $0.setMasterBPM(value) }
+            }
+            .help(locked ? "The master tempo, heard at once" : "The master tempo, heard once it is locked")
+        }
+    }
+}
+
 struct LaneHeaders: View {
     let session: MixSession
     /// The lanes top to bottom, as the timeline beside it draws them.
@@ -946,9 +997,7 @@ struct LaneHeaders: View {
                 .padding(.leading, 12)
                 .frame(height: TimelineLayout.transitionHeight)
                 .overlay(alignment: .top) { Divider() }
-            Text("Tempo")
-                .font(.caption.weight(.medium))
-                .foregroundStyle(.secondary)
+            MasterTempoHeader(session: session)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.leading, 12)
                 .frame(height: TimelineLayout.tempoHeight)
