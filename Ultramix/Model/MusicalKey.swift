@@ -27,6 +27,12 @@ nonisolated struct MusicalKey: Codable, Sendable, Hashable {
 
     /// Round the wheel, the minor keys before the major ones of each number.
     var sortValue: Int { camelotNumber * 2 + (minor ? 0 : 1) }
+
+    /// The key `semitones` higher (lower if negative). Seven semitones is one
+    /// step round the Camelot wheel, one semitone seven steps.
+    func transposed(by semitones: Int) -> MusicalKey {
+        MusicalKey(tonic: ((tonic + semitones) % 12 + 12) % 12, minor: minor)
+    }
 }
 
 /// What the key analysis found for a track.

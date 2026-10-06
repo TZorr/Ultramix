@@ -4,7 +4,7 @@
 //
 //  The strip under the timeline, in two rows: on top the selected clip - which
 //  track, where it sits, its beatgrid, its lock - how dragging moves clips,
-//  and the mix's length; below, its tempo target, gain, loop, mute and
+//  and the mix's length; below, its tempo target, gain, key, loop, mute and
 //  transition, and a warning when its tempo leaves what the stretcher can do.
 //  With nothing selected, the handful of keys worth knowing.
 //
@@ -132,7 +132,7 @@ struct ClipBar: View {
             HStack(spacing: 12) {
                 tempo(clip, track)
                 columnRule
-                controls(clip)
+                controls(clip, track)
                 Spacer(minLength: 0)
             }
             .frame(height: Self.rowHeight)
@@ -174,9 +174,9 @@ struct ClipBar: View {
         .help("Let the mix reach the track's own tempo at this clip")
     }
 
-    /// Under "Bar one": level, loop and mute, transition.
+    /// Under "Bar one": level, key, loop and mute, transition.
     @ViewBuilder
-    private func controls(_ clip: Clip) -> some View {
+    private func controls(_ clip: Clip, _ track: Track) -> some View {
         Text("Gain").foregroundStyle(.secondary)
         Button { session.perform { $0.stepGain(clip.id, by: -1) } } label: {
             stepIcon("minus")
@@ -197,6 +197,8 @@ struct ClipBar: View {
         .help("Clip gain 1 dB louder")
         .accessibilityLabel("Gain up")
         loudness(clip)
+        Divider().frame(height: 18)
+        key(clip, track)
         Divider().frame(height: 18)
         Toggle("Loop", isOn: Binding(get: { clip.looping },
                                      set: { value in session.perform { $0.setLooping(clip.id, value) } }))
@@ -220,6 +222,44 @@ struct ClipBar: View {
             Label("Tempo outside 0.5×–2× of the track", systemImage: "exclamationmark.triangle.fill")
                 .foregroundStyle(.orange)
         }
+    }
+
+    /// Semitones up or down, and the key that makes - in Camelot, which is
+    /// what a DJ matches by. A shift plays once it is rendered; until then
+    /// the clip plays as it is, and a spinner says so.
+    @ViewBuilder
+    private func key(_ clip: Clip, _ track: Track) -> some View {
+        Text("Key").foregroundStyle(.secondary)
+        Button { session.perform { $0.stepKeyShift(clip.id, by: -1) } } label: {
+            stepIcon("minus")
+        }
+        .disabled(clip.keyShift <= Clip.keyShiftRange.lowerBound)
+        .help("Play the clip a semitone lower")
+        .accessibilityLabel("Key down")
+        Text(Self.keyLabel(clip.keyShift, track.key?.key))
+            .monospacedDigit()
+            .frame(width: 70)
+            .help(track.key.map { "\($0.key.name) (\($0.key.camelot)) as analysed; the length and the beatgrid stay as they are" }
+                  ?? "Semitones up or down, −6 to +6; the length and the beatgrid stay as they are")
+        Button { session.perform { $0.stepKeyShift(clip.id, by: 1) } } label: {
+            stepIcon("plus")
+        }
+        .disabled(clip.keyShift >= Clip.keyShiftRange.upperBound)
+        .help("Play the clip a semitone higher")
+        .accessibilityLabel("Key up")
+        if clip.keyShift != 0, library.shifting.contains(Library.ShiftKey(track: clip.trackID, semitones: clip.keyShift)) {
+            ProgressView()
+                .controlSize(.small)
+                .help("Rendering the key shift; the clip plays unshifted until it is ready")
+        }
+    }
+
+    /// "+2 · 10A", or "0" when the clip plays in its own key; the Camelot
+    /// code only when the track's key is known.
+    static func keyLabel(_ semitones: Int, _ key: MusicalKey?) -> String {
+        let shift = semitones == 0 ? "0" : String(format: "%+d", semitones)
+        guard let key else { return shift }
+        return "\(shift) · \(key.transposed(by: semitones).camelot)"
     }
 
     /// Minus is a flat glyph: a button sized by it comes out lower than the

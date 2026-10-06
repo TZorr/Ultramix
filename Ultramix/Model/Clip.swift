@@ -27,6 +27,9 @@ nonisolated struct Clip: Identifiable, Codable, Sendable, Equatable {
     /// clip cannot be pushed further than a drawn curve could push it; the
     /// floor is quiet enough to tuck a clip under another without muting it.
     static let gainRange = -24.0...Automation.maxVolumeDB
+    /// How far a clip's key may be moved, in semitones. Half an octave
+    /// either way reaches every key; further, voices start to sound wrong.
+    static let keyShiftRange = -6...6
 
     let id: UUID
     var trackID: UUID
@@ -66,6 +69,11 @@ nonisolated struct Clip: Identifiable, Codable, Sendable, Equatable {
     /// filter - so a fade drawn on the lane still fades from wherever the
     /// gain put the clip, and a transition works on it unchanged.
     var gainDB: Double
+    /// Semitones the clip plays higher (or lower); 0 plays the file as it
+    /// is. The length stays: a shifted clip is the same file at another
+    /// pitch, rendered once into the audio cache (KeyShifter), so the grid,
+    /// the stretcher and every curve on the clip are unchanged.
+    var keyShift: Int
     /// Volume, pan and filter drawn on the clip, in clip-local beats
     /// (timeline beat − `anchorBeat`). Moves, copies and deletes with the
     /// clip; what a trim hides stays here, silent, until the clip is
@@ -75,7 +83,7 @@ nonisolated struct Clip: Identifiable, Codable, Sendable, Equatable {
     init(id: UUID = UUID(), trackID: UUID, lane: Int, anchorBeat: Int, tempoAnchorBeat: Int? = nil,
          targetBPM: Double? = nil, rampStartBeat: Int? = nil, trimStart: Double = 0, trimEnd: Double = 0,
          looping: Bool = false, loopLead: Double = 0, loopTail: Double = 0, muted: Bool = false,
-         locked: Bool = false, gainDB: Double = 0, automation: ClipAutomation = ClipAutomation()) {
+         locked: Bool = false, gainDB: Double = 0, keyShift: Int = 0, automation: ClipAutomation = ClipAutomation()) {
         self.id = id
         self.trackID = trackID
         self.lane = lane
@@ -91,16 +99,18 @@ nonisolated struct Clip: Identifiable, Codable, Sendable, Equatable {
         self.muted = muted
         self.locked = locked
         self.gainDB = gainDB
+        self.keyShift = keyShift
         self.automation = automation
     }
 
     enum CodingKeys: String, CodingKey {
         case id, trackID, lane, anchorBeat, tempoAnchorBeat, targetBPM, rampStartBeat
-        case trimStart, trimEnd, looping, loopLead, loopTail, muted, locked, gainDB, automation
+        case trimStart, trimEnd, looping, loopLead, loopTail, muted, locked, gainDB, keyShift, automation
     }
 
-    /// Written by hand so that a gain of 0 and an empty automation leave no
-    /// key: a clip that never used either saves exactly as it did before.
+    /// Written by hand so that a gain of 0, no key shift and an empty
+    /// automation leave no key: a clip that never used them saves exactly as
+    /// it did before.
     func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(id, forKey: .id)
@@ -118,6 +128,7 @@ nonisolated struct Clip: Identifiable, Codable, Sendable, Equatable {
         try c.encode(muted, forKey: .muted)
         if locked { try c.encode(locked, forKey: .locked) }
         if gainDB != 0 { try c.encode(gainDB, forKey: .gainDB) }
+        if keyShift != 0 { try c.encode(keyShift, forKey: .keyShift) }
         if !automation.isEmpty { try c.encode(automation, forKey: .automation) }
     }
 
@@ -141,6 +152,8 @@ nonisolated struct Clip: Identifiable, Codable, Sendable, Equatable {
         // Whole dB, like everything the buttons can set: a −1.5 from the
         // short time the gain was typed loads as −2.
         gainDB = gain.isFinite ? min(max(gain, Self.gainRange.lowerBound), Self.gainRange.upperBound).rounded() : 0
+        let shift = try c.decodeIfPresent(Int.self, forKey: .keyShift) ?? 0
+        keyShift = min(max(shift, Self.keyShiftRange.lowerBound), Self.keyShiftRange.upperBound)
         automation = try c.decodeIfPresent(ClipAutomation.self, forKey: .automation) ?? ClipAutomation()
     }
 }

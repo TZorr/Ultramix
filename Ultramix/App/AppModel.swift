@@ -87,6 +87,16 @@ final class AppModel {
                 session?.rebuild()
                 live?.rebuild()
             }
+            // The key shifts worth rendering: those either session plays.
+            library.wantedShifts = { [weak session, weak live] in
+                var wanted = Set<Library.ShiftKey>()
+                for s in [session, live].compactMap({ $0 }) {
+                    for clip in s.document.clips where clip.keyShift != 0 {
+                        wanted.insert(Library.ShiftKey(track: clip.trackID, semitones: clip.keyShift))
+                    }
+                }
+                return wanted
+            }
             // What the cache's size limit must not take: everything either
             // session plays or auditions.
             library.pinnedTracks = { [weak session, weak live] in

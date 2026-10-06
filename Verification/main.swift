@@ -4225,6 +4225,310 @@ section("lane knobs: a CC from a MIDI source reaches the knobs") {
     defaults.removePersistentDomain(forName: "ultramix.verify.midi")
 }
 
+// MARK: - Key shift
+
+/// `samples` (interleaved stereo) shifted by `semitones`, as the cache gets it.
+func keyShifted(_ samples: [Float], semitones: Int) -> [Float] {
+    var out: [Float] = []
+    out.reserveCapacity(samples.count)
+    samples.withUnsafeBufferPointer { input in
+        try! KeyShifter.shift(input.baseAddress!, frames: samples.count / 2, channels: 2, semitones: semitones,
+                              sampleRate: AudioFrames.sampleRate) { block, count in
+            out.append(contentsOf: UnsafeBufferPointer(start: block, count: count))
+        }
+    }
+    return out
+}
+
+func stereoSine(_ hz: Double, seconds: Double, amplitude: Double = 0.5) -> [Float] {
+    let frames = Int(seconds * AudioFrames.sampleRate)
+    var samples = [Float](repeating: 0, count: frames * 2)
+    for i in 0..<frames {
+        let v = Float(amplitude * sin(2 * Double.pi * hz * Double(i) / AudioFrames.sampleRate))
+        samples[2 * i] = v
+        samples[2 * i + 1] = v
+    }
+    return samples
+}
+
+/// The left channel's frequency between two times, from its upward zero
+/// crossings, each placed between samples by linear interpolation.
+func zeroCrossingHz(_ samples: [Float], from: Double, to: Double) -> Double {
+    let rate = AudioFrames.sampleRate
+    var crossings: [Double] = []
+    for i in Int(from * rate)..<Int(to * rate) {
+        let a = samples[2 * i], b = samples[2 * i + 2]
+        if a < 0 && b >= 0 { crossings.append(Double(i) + Double(-a / (b - a))) }
+    }
+    guard let first = crossings.first, let last = crossings.last, crossings.count > 1 else { return 0 }
+    return Double(crossings.count - 1) / ((last - first) / rate)
+}
+
+section("key shift: the modified real FFT is the half-bin DFT, and comes back ×N") {
+    check(ModifiedRealFFT.fastComplexSize(above: 1323) == 1536, "6 × 256")
+    check(ModifiedRealFFT.fastComplexSize(above: 112) == 128, "7 × 16 is not fast: 8 × 16")
+    check(ModifiedRealFFT.fastSize(above: 2646) == 3072, "\(ModifiedRealFFT.fastSize(above: 2646))")
+    for n in [96, 6144] {
+        let fft = ModifiedRealFFT(size: n)
+        var generator = SplitMix(seed: UInt64(n))
+        let x = (0..<n).map { _ in generator.uniform(-1, 1) }
+        var real = [Float](repeating: 0, count: n / 2), imag = real
+        fft.forward(x, real: &real, imag: &imag)
+        var worst = 0.0, peak = 0.0
+        for k in stride(from: 0, to: n / 2, by: n / 2 / 16) {
+            var sr = 0.0, si = 0.0
+            for t in 0..<n {
+                let phase = -2 * Double.pi * Double(t) * (Double(k) + 0.5) / Double(n)
+                sr += Double(x[t]) * cos(phase)
+                si += Double(x[t]) * sin(phase)
+            }
+            worst = max(worst, hypot(sr - Double(real[k]), si - Double(imag[k])))
+            peak = max(peak, hypot(sr, si))
+        }
+        check(worst / peak < 1e-5, "N = \(n): relative error \(worst / peak)")
+        var back = [Float](repeating: 0, count: n)
+        fft.inverse(real: real, imag: imag, &back)
+        let roundTrip = (0..<n).map { abs(Double(back[$0]) / Double(n) - Double(x[$0])) }.max()!
+        check(roundTrip < 1e-5, "N = \(n): round trip \(roundTrip)")
+    }
+}
+
+section("key shift: the STFT gives back what it was given") {
+    let shifter = KeyShifter(channels: 2, sampleRate: AudioFrames.sampleRate)
+    let stft = shifter.stft
+    // Signalsmith's default preset at 44.1 kHz.
+    check(stft.blockSamples == 5292 && stft.interval == 1323, "\(stft.blockSamples) / \(stft.interval)")
+    check(stft.fftSamples == 6144 && stft.bands == 3072, "\(stft.fftSamples) / \(stft.bands)")
+    check(shifter.inputLatency == 2646 && shifter.outputLatency == 2646, "window peak mid-block")
+    check(near(Double(stft.binToFreq(0)), 0.5 / 6144, 1e-9), "bins sit half a bin up")
+
+    // Analysed and synthesised without a change, every interval: the input,
+    // one block less one interval later.
+    let probe = STFTProbe(channels: 2, blockSamples: 5292, interval: 1323)
+    let interval = 1323, frames = 1323 * 40
+    var generator = SplitMix(seed: 9)
+    let x = (0..<frames * 2).map { _ in generator.uniform(-0.5, 0.5) }
+    let y = probe.roundTrip(x, frames: frames)
+    let delay = 5292 - interval
+    var worst: Float = 0
+    for n in (2 * 5292)..<frames {
+        for c in 0..<2 { worst = max(worst, abs(y[2 * n + c] - x[2 * (n - delay) + c])) }
+    }
+    check(worst < 1e-5, "worst reconstruction error \(worst)")
+}
+
+/// Drives a bare ShiftSTFT the way the shifter does, without touching the
+/// spectra.
+nonisolated struct STFTProbe {
+    let stft: ShiftSTFT
+
+    init(channels: Int, blockSamples: Int, interval: Int) {
+        stft = ShiftSTFT(channels: channels, blockSamples: blockSamples, interval: interval,
+                         extraInputHistory: interval + 1)
+    }
+
+    func roundTrip(_ x: [Float], frames: Int) -> [Float] {
+        let channels = stft.channels, interval = stft.interval
+        var y = [Float](repeating: 0, count: frames * channels)
+        var chunk = [Float](repeating: 0, count: interval)
+        var k = 0
+        while (k + 1) * interval <= frames {
+            for c in 0..<channels {
+                for i in 0..<interval { chunk[i] = x[(k * interval + i) * channels + c] }
+                stft.writeInput(channel: c, length: interval, chunk)
+            }
+            stft.moveInput(interval)
+            for c in 0..<channels { stft.analyse(channel: c) }
+            stft.synthesise()
+            for c in 0..<channels {
+                stft.readOutput(channel: c, length: interval, into: &chunk)
+                for i in 0..<interval { y[(k * interval + i) * channels + c] = chunk[i] }
+            }
+            stft.moveOutput(interval)
+            k += 1
+        }
+        return y
+    }
+}
+
+section("key shift: the same samples as Signalsmith Stretch's C++") {
+    // Two sines a channel, a second long, up 3 semitones. The values were
+    // rendered by signalsmith-stretch 1.3.2 (with linear on Accelerate),
+    // `exact()`. A phase vocoder feeds its own output back, so the two
+    // implementations drift apart over seconds by float rounding alone -
+    // the C++ against itself on another FFT drifts the same way - but at the
+    // start they agree to the last bits of a Float.
+    let frames = 44_100
+    var x = [Float](repeating: 0, count: frames * 2)
+    for i in 0..<frames {
+        let t = Double(i) / 44_100
+        x[2 * i] = Float(0.3 * sin(2 * Double.pi * 220 * t) + 0.2 * sin(2 * Double.pi * 330 * t + 0.5))
+        x[2 * i + 1] = Float(0.25 * sin(2 * Double.pi * 277.18 * t) + 0.15 * sin(2 * Double.pi * 440 * t + 1.0))
+    }
+    let y = keyShifted(x, semitones: 3)
+    check(y.count == x.count, "as long as the input")
+    let reference: [(Int, Float, Float)] = [
+        (0, -0.0492536, -0.0541194),
+        (1000, -0.2993565, -0.0513189),
+        (2000, -0.3961422, -0.2409333),
+        (3000, -0.4163466, 0.1422523),
+        (4000, -0.3712362, -0.0818179),
+    ]
+    for (i, left, right) in reference {
+        check(abs(y[2 * i] - left) < 2e-5 && abs(y[2 * i + 1] - right) < 2e-5,
+              "frame \(i): \(y[2 * i]), \(y[2 * i + 1]) against \(left), \(right)")
+    }
+}
+
+section("key shift: in tune, at the same level, in the same place") {
+    // A 440 Hz sine against equal temperament, and against what the C++
+    // original measures on the same sine: its peak estimate sits a few cents
+    // off for some notes (+3 cents at +2), which the port reproduces to the
+    // hundredth of a hertz - and which is below what anyone hears.
+    let sine = stereoSine(440, seconds: 3)
+    for (semitones, hz, original) in [(2, 493.8833, 494.7816), (-3, 369.9944, 370.0073), (6, 622.2540, 622.8948)] {
+        let y = keyShifted(sine, semitones: semitones)
+        check(y.count == sine.count, "\(semitones): length kept")
+        let measured = zeroCrossingHz(y, from: 0.5, to: 2.5)
+        let cents = 1200 * log2(measured / hz)
+        check(abs(cents) < 5, "\(semitones) semitones: \(measured) Hz, \(cents) cents from \(hz)")
+        check(abs(measured - original) < 0.01, "\(semitones) semitones: \(measured) Hz, the C++ measures \(original)")
+        func rms(_ v: [Float]) -> Double {
+            let mid = v[(2 * 44_100)..<(4 * 44_100)]
+            return (mid.reduce(0) { $0 + Double($1 * $1) } / Double(mid.count)).squareRoot()
+        }
+        let level = 20 * log10(rms(y) / rms(sine))
+        check(abs(level) < 0.5, "\(semitones) semitones: level \(level) dB")
+    }
+
+    // Clicks every half second: each comes out smeared over the window,
+    // but centred where it was - the beatgrid does not move.
+    let rate = 44_100
+    var clicks = [Float](repeating: 0, count: rate * 4 * 2)
+    let positions = stride(from: rate / 2, to: rate * 4 - rate / 4, by: rate / 2).map { $0 + 123 }
+    for p in positions { clicks[2 * p] = 0.8; clicks[2 * p + 1] = 0.8 }
+    let shiftedClicks = keyShifted(clicks, semitones: 3)
+    var worst = 0.0
+    for p in positions {
+        var weighted = 0.0, total = 0.0
+        for i in (p - rate / 8)..<(p + rate / 8) {
+            let e = Double(shiftedClicks[2 * i] * shiftedClicks[2 * i])
+            weighted += e * Double(i - p)
+            total += e
+        }
+        check(total > 1e-3, "click at \(p) came through: energy \(total)")
+        worst = max(worst, abs(weighted / total))
+    }
+    check(worst < 44, "click energy centred within 1 ms, worst \(worst / 44.1) ms")
+    print("     clicks centred within \(String(format: "%.3f", worst / 44.1)) ms")
+}
+
+section("key shift: a pure function of its input; silence stays silence") {
+    var generator = SplitMix(seed: 3)
+    var x = stereoSine(311, seconds: 2.5, amplitude: 0.3)
+    for i in 0..<x.count { x[i] += generator.uniform(-0.05, 0.05) }
+    // Digital silence in the middle, longer than two blocks, and at the end.
+    for i in (2 * 44_100)..<(2 * 66_150) { x[i] = 0 }
+    let first = keyShifted(x, semitones: -2)
+    let second = keyShifted(x, semitones: -2)
+    check(first == second, "two renders are bit-identical")
+    check(first.allSatisfy(\.isFinite), "no NaN or infinity")
+    let silent = keyShifted([Float](repeating: 0, count: 44_100 * 2), semitones: 5)
+    check(silent.allSatisfy { $0 == 0 }, "silence in, silence out")
+    let short = [Float](repeating: 0.25, count: 1000 * 2)
+    check(keyShifted(short, semitones: 1) == short, "shorter than a block: passed through as it is")
+    check(keyShifted(x, semitones: 0) == x, "no shift: the input itself")
+
+    // A render nobody wants any more stops, and leaves nothing behind.
+    let folder = FileManager.default.temporaryDirectory.appendingPathComponent("ultramix-shift-\(UUID().uuidString)")
+    try! FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    let destination = folder.appendingPathComponent("cancelled.f32")
+    let long = AudioFrames(interleaved: stereoSine(97, seconds: 120, amplitude: 0.4))
+    let done = DispatchSemaphore(value: 0)
+    nonisolated(unsafe) var outcome = "not run"
+    let task = Task.detached {
+        do {
+            try KeyShifter.render(long, semitones: 2, to: destination)
+            outcome = "rendered"
+        } catch is CancellationError {
+            outcome = "cancelled"
+        } catch {
+            outcome = "\(error)"
+        }
+        done.signal()
+    }
+    task.cancel()
+    done.wait()
+    check(outcome == "cancelled", "cancelled render: \(outcome)")
+    let left = (try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? ["?"]
+    check(left.isEmpty, "nothing left behind: \(left)")
+    try? FileManager.default.removeItem(at: folder)
+
+    let start = Date()
+    _ = keyShifted(stereoSine(97, seconds: 30, amplitude: 0.4), semitones: 1)
+    print("     30 s of stereo shifted in \(Int(Date().timeIntervalSince(start) * 1000)) ms")
+}
+
+section("key shift: the clip, its file, the plan and the key it makes") {
+    // A clip saves its shift only when it has one, and loads it held to range.
+    var clip = Clip(trackID: UUID(), lane: 0, anchorBeat: 0)
+    let plain = String(data: try! JSONEncoder().encode(clip), encoding: .utf8)!
+    check(!plain.contains("keyShift"), "no key shift, no key")
+    clip.keyShift = -3
+    let shifted = try! JSONDecoder().decode(Clip.self, from: try! JSONEncoder().encode(clip))
+    check(shifted.keyShift == -3, "round trip: \(shifted.keyShift)")
+    var json = String(data: try! JSONEncoder().encode(clip), encoding: .utf8)!
+    json = json.replacingOccurrences(of: "\"keyShift\":-3", with: "\"keyShift\":11")
+    check(try! JSONDecoder().decode(Clip.self, from: Data(json.utf8)).keyShift == 6, "held to ±6")
+
+    // Steps, split and duplicate.
+    let track = UUID()
+    let grid = SourceGrid(bpm: 124, firstBeatSeconds: 0, durationSeconds: 60)
+    let lookup: GridLookup = { $0 == track ? grid : nil }
+    var doc = MixDocument()
+    let id = try! doc.addClip(trackID: track, grid: grid, lane: 0, startBeat: 0, grids: lookup)
+    doc.stepKeyShift(id, by: 4)
+    doc.stepKeyShift(id, by: 4)
+    check(doc.clips[0].keyShift == 6, "stops at +6")
+    doc.setKeyShift(id, -2)
+    let right = try! doc.splitClip(id, at: 32, grids: lookup)
+    check(doc.clips.allSatisfy { $0.keyShift == -2 }, "both halves of a split keep the shift")
+    let copy = try! doc.duplicateClip(right, grids: lookup)
+    check(doc.clips.first { $0.id == copy }?.keyShift == -2, "a copy keeps the shift")
+
+    // The plan plays the shifted audio, and the plain audio until it is there.
+    let original = AudioFrames(interleaved: [Float](repeating: 0.1, count: 44_100 * 60 * 2))
+    let up = AudioFrames(interleaved: [Float](repeating: 0.2, count: 44_100 * 60 * 2))
+    let waiting = RenderPlan(document: doc, grids: lookup, audio: { _ in original }, generation: 0)
+    check(waiting.segments.allSatisfy { $0.audio === original }, "no shift rendered yet: the clip plays as it is")
+    let ready = RenderPlan(document: doc, grids: lookup, audio: { _ in original }, generation: 0,
+                           shiftedAudio: { $1 == -2 ? up : nil })
+    check(ready.segments.allSatisfy { $0.audio === up }, "rendered: the shifted file")
+    doc.setKeyShift(id, 0)
+    let mixed = RenderPlan(document: doc, grids: lookup, audio: { _ in original }, generation: 0,
+                           shiftedAudio: { _, _ in up })
+    check(mixed.segments.filter { $0.audio === original }.count == 1 && mixed.segments.filter { $0.audio === up }.count == 2,
+          "a clip without a shift keeps its plain audio")
+
+    // The key it makes.
+    let c = MusicalKey(tonic: 0, minor: false), am = MusicalKey(tonic: 9, minor: true)
+    check(c.transposed(by: 2).name == "D" && c.transposed(by: 2).camelot == "10B", "C + 2 = D, 10B")
+    check(c.transposed(by: -1).name == "B" && c.transposed(by: 12) == c, "down wraps, an octave is the same key")
+    check(am.transposed(by: 7).camelot == "9A", "a fifth up is one step round the wheel")
+
+    // The cache file of a shift, and whose it is.
+    let name = CacheSweep.shiftedName(track, semitones: 2)
+    check(name == "\(track.uuidString).k+2.sw1.f32", name)
+    check(CacheSweep.shiftedName(track, semitones: -5).hasSuffix(".k-5.sw1.f32"), "minus sign")
+    check(CacheSweep.shift(in: name).map { $0.id == track && $0.semitones == 2 } == true, "parsed back")
+    check(CacheSweep.shift(in: "\(track.uuidString).k+2.ss1.f32") == nil, "another tag is not ours to play")
+    check(CacheSweep.shift(in: "\(track.uuidString).f32") == nil, "the plain audio is not a shift")
+    let gone = UUID()
+    let names = [CacheSweep.shiftedName(track, semitones: 1), CacheSweep.shiftedName(gone, semitones: -1),
+                 ".\(CacheSweep.shiftedName(track, semitones: 3)).\(UUID().uuidString).partial"]
+    check(Set(CacheSweep.orphans(among: names, keeping: [track])) == Set(names[1...]), "a removed track's shifts go")
+}
+
 // MARK: - Summary
 
 print("\(checks) checks, \(failures) failed")

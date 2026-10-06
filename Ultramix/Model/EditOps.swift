@@ -372,7 +372,8 @@ nonisolated extension MixDocument {
                          tempoAnchorBeat: clip.tempoAnchorBeat, targetBPM: clip.targetBPM,
                          rampStartBeat: clip.rampStartBeat,
                          trimStart: clip.trimStart + (split - shape.bodyStart), trimEnd: clip.trimEnd,
-                         muted: clip.muted, locked: clip.locked, gainDB: clip.gainDB, automation: clip.automation)
+                         muted: clip.muted, locked: clip.locked, gainDB: clip.gainDB, keyShift: clip.keyShift,
+                         automation: clip.automation)
         left.trimEnd += shape.bodyEnd - split
         // Both halves keep every point, but a transition's bar goes to the
         // half it begins on - on both it would be drawn twice.
@@ -428,7 +429,8 @@ nonisolated extension MixDocument {
                             rampStartBeat: clip.rampStartBeat.map { $0 + shift },
                             trimStart: clip.trimStart, trimEnd: clip.trimEnd, looping: clip.looping,
                             loopLead: clip.loopLead, loopTail: clip.loopTail, muted: clip.muted,
-                            locked: clip.locked, gainDB: clip.gainDB, automation: clip.automation)
+                            locked: clip.locked, gainDB: clip.gainDB, keyShift: clip.keyShift,
+                            automation: clip.automation)
             copy.lane = lane
             if fits(copy, grids) {
                 clips.append(copy)
@@ -637,6 +639,21 @@ nonisolated extension MixDocument {
     mutating func stepGain(_ id: UUID, by steps: Int) {
         guard let i = index(of: id) else { return }
         setGain(id, clips[i].gainDB.rounded() + Double(steps))
+    }
+
+    // MARK: - Key
+
+    /// Sets how many semitones a clip is shifted, held to
+    /// `Clip.keyShiftRange`.
+    mutating func setKeyShift(_ id: UUID, _ semitones: Int) {
+        guard let i = index(of: id) else { return }
+        clips[i].keyShift = min(max(semitones, Clip.keyShiftRange.lowerBound), Clip.keyShiftRange.upperBound)
+    }
+
+    /// One click of the key − / + buttons; at either end nothing changes.
+    mutating func stepKeyShift(_ id: UUID, by steps: Int) {
+        guard let i = index(of: id) else { return }
+        setKeyShift(id, clips[i].keyShift + steps)
     }
 
     // MARK: - Lane colour

@@ -11,12 +11,16 @@ These notices must be kept with the source and with any binary distribution.
 | LAME (`libmp3lame`) | 3.100 (`lame-master`, alpha 1) | LGPL-2.0 | `Ultramix/LAME/` |
 | Beat This! weights (`small0`) | — | MIT | `Ultramix/Resources/BeatThis_small0.mlpackage` |
 | Core ML conversion of those weights | — | MIT | same file |
+| Signalsmith Stretch (ported to Swift) | 1.3.2 | MIT | `Ultramix/Engine/KeyShifter.swift` |
+| Signalsmith Linear (STFT and FFT, ported to Swift) | `main`, October 2026 | MIT | `Ultramix/Engine/ShiftSTFT.swift`, `Ultramix/Engine/ModifiedRealFFT.swift` |
 
 Full licence texts ship with the source:
 
 - `Ultramix/LAME/COPYING.LAME.txt` — GNU Library General Public License v2
 - `Ultramix/Resources/BeatThis-LICENSE.txt` — the MIT texts for Beat This!
   and for the Core ML conversion
+- `Ultramix/Resources/Signalsmith-LICENSE.txt` — the MIT texts for
+  Signalsmith Stretch and Signalsmith Linear
 
 ## LAME (MP3 encoder)
 
@@ -57,9 +61,28 @@ Full licence texts ship with the source:
   output, and everything the grid is then built from is the Ultramix
   analyser's.
 
+## Signalsmith Stretch and Signalsmith Linear (key shift)
+
+- **What:** the pitch-shifting method of Signalsmith Stretch 1.3.2, and the
+  parts of Signalsmith Linear it runs on (the short-time Fourier transform and
+  the half-bin-shifted real FFT). Used only to change a clip's key.
+- **Copyright:** Signalsmith Stretch © 2022 Geraint Luff / Signalsmith Audio
+  Ltd — <https://github.com/Signalsmith-Audio/signalsmith-stretch>.
+  Signalsmith Linear © 2025 Signalsmith Audio —
+  <https://github.com/Signalsmith-Audio/linear>.
+- **License:** MIT, both of them. The full texts ship with the source and in
+  the app bundle as `Ultramix/Resources/Signalsmith-LICENSE.txt`.
+- **How it is used:** no C++ is compiled into Ultramix. The algorithm was
+  ported to Swift, cut down to a pitch shift at an unchanged tempo:
+  `Ultramix/Engine/KeyShifter.swift` (Stretch), `Ultramix/Engine/ShiftSTFT.swift`
+  and `Ultramix/Engine/ModifiedRealFFT.swift` (Linear, with Apple's vDSP for
+  the FFT itself). Each file names its origin in its header. The port is
+  checked against sample values rendered by the C++ original
+  (`Verification/main.swift`, "key shift").
+
 ## Everything else
 
 Time-stretching, the tempo and key analysers, the loudness measurement, the
 mastering limiter, the MP4 and ID3 tag writers and all other audio
-processing in Ultramix are its own code. No other third-party source,
+processing in Ultramix, apart from the key shift above, are its own code. No other third-party source,
 binary library or model is included.

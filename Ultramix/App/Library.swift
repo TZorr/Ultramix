@@ -14,6 +14,11 @@
 //  used first; a track without it is decoded again (`prepare`) when something
 //  asks, and until then `audio(for:)` answers nil and the clip is silent.
 //
+//  A clip with a key shift plays its track rendered at that shift
+//  (KeyShifter) into a cache file of its own, one at a time in the
+//  background (`prepareShifts`); until it is there the clip plays unshifted.
+//  Shifts count towards the size limit with their track and go with it.
+//
 //  With copying switched off (ImportCopy) a song outside the working directory
 //  keeps its absolute path and a security-scoped bookmark, resolved for as
 //  long as each read takes (`songURL`). Playback reads the cache and never
@@ -45,6 +50,8 @@ final class Library {
     /// Tracks being decoded again for playback. Read by `audio(for:)`, so
     /// a view that asked for audio is drawn again when it arrives.
     private(set) var decoding: Set<UUID> = []
+    /// Key shifts being rendered. Observed like `decoding`.
+    private(set) var shifting: Set<ShiftKey> = []
     /// What is selected in the library panel. It lives here, not in the
     /// panel, so that a menu command can act on it too.
     var selection: Set<UUID> = []
@@ -70,6 +77,19 @@ final class Library {
     @ObservationIgnored var pinnedTracks: () -> Set<UUID> = { [] }
 
     @ObservationIgnored private var frames: [UUID: AudioFrames] = [:]
+    @ObservationIgnored private var shiftedFrames: [ShiftKey: AudioFrames] = [:]
+    @ObservationIgnored private var shiftQueue: [ShiftKey] = []
+    @ObservationIgnored private var shifters = 0
+    @ObservationIgnored private var shiftWaiters: [ShiftKey: [(AudioFrames?) -> Void]] = [:]
+    /// Shifts that failed this session, not tried again on every rebuild.
+    @ObservationIgnored private var unshiftable: Set<ShiftKey> = []
+    /// The render running for each shift, to be cancelled when no clip
+    /// wants it any more.
+    @ObservationIgnored private var shiftTasks: [ShiftKey: Task<ShiftOutcome, Never>] = [:]
+    /// Every shift a clip in either session plays. Set by the owner, which
+    /// knows the sessions. Clicking + three times wants +3 only: +1 and +2
+    /// are dropped from the queue, or stopped if already rendering.
+    @ObservationIgnored var wantedShifts: (() -> Set<ShiftKey>)?
     @ObservationIgnored private var index: [UUID: Int] = [:]
     @ObservationIgnored private var queue: [UUID] = []
     @ObservationIgnored private var hints: [UUID: Double] = [:]
@@ -102,6 +122,21 @@ final class Library {
     /// Decodes for playback: one a fifth of a second typically, so two
     /// keep up with a mix being opened without starving the analysis.
     private static let maxDecoders = 2
+    /// Rendering a shift takes the cores' worth of one track for a second or
+    /// two; one at a time leaves room for playback and decoding.
+    private static let maxShifters = 1
+
+    /// One track at one key shift.
+    struct ShiftKey: Hashable, Sendable {
+        var track: UUID
+        var semitones: Int
+    }
+
+    private enum ShiftOutcome: Sendable {
+        case rendered
+        case cancelled
+        case failed(String)
+    }
 
     let workspace: Workspace
     var cacheDirectory: URL { workspace.cache }
@@ -134,9 +169,13 @@ final class Library {
         fillPending.removeAll()
         cacheFill = nil
         decodeQueue.removeAll()
+        shiftQueue.removeAll()
         let waiting = waiters
         waiters.removeAll()
         for done in waiting.values.joined() { done(nil) }
+        let waitingShifts = shiftWaiters
+        shiftWaiters.removeAll()
+        for done in waitingShifts.values.joined() { done(nil) }
     }
 
     // MARK: - Lookup
@@ -219,6 +258,160 @@ final class Library {
         return missing
     }
 
+    // MARK: - Key shifts
+
+    /// The track's audio shifted by `semitones`, if it has been rendered; the
+    /// plain audio for 0. Nil does not start a render; `prepareShifts` does.
+    func audio(for id: UUID, keyShift semitones: Int) -> AudioFrames? {
+        guard semitones != 0 else { return audio(for: id) }
+        _ = shifting
+        let key = ShiftKey(track: id, semitones: semitones)
+        if let loaded = shiftedFrames[key] { return loaded }
+        let url = shiftedURL(key)
+        guard FileManager.default.fileExists(atPath: url.path), let mapped = try? AudioFrames(mapping: url) else { return nil }
+        shiftedFrames[key] = mapped
+        return mapped
+    }
+
+    /// Renders, in the background, the shifts that are not in the cache.
+    /// A track without decoded audio is decoded first; the render follows
+    /// when the mix asks again after the decode.
+    func prepareShifts(_ keys: some Sequence<ShiftKey>, first: Bool = false) {
+        var missingAudio: [UUID] = []
+        for key in keys where key.semitones != 0 {
+            guard track(key.track) != nil, !unshiftable.contains(key) else {
+                serveShift(key, nil)
+                continue
+            }
+            if shiftedFrames[key] != nil || FileManager.default.fileExists(atPath: shiftedURL(key).path) {
+                if shiftWaiters[key] != nil { serveShift(key, audio(for: key.track, keyShift: key.semitones)) }
+                continue
+            }
+            guard audio(for: key.track) != nil else {
+                missingAudio.append(key.track)
+                continue
+            }
+            if shifting.contains(key) {
+                if first, let i = shiftQueue.firstIndex(of: key) {
+                    shiftQueue.remove(at: i)
+                    shiftQueue.insert(key, at: 0)
+                }
+                continue
+            }
+            shifting.insert(key)
+            if first { shiftQueue.insert(key, at: 0) } else { shiftQueue.append(key) }
+        }
+        if !missingAudio.isEmpty { prepare(missingAudio, first: first) }
+        dropUnwantedShifts()
+        pumpShifts()
+    }
+
+    /// Forgets queued shifts no clip plays any more and stops renders of
+    /// them - unless a bounce is waiting for one.
+    private func dropUnwantedShifts() {
+        guard let wanted = wantedShifts?() else { return }
+        func unwanted(_ key: ShiftKey) -> Bool { !wanted.contains(key) && shiftWaiters[key] == nil }
+        for key in shiftQueue where unwanted(key) { shifting.remove(key) }
+        shiftQueue.removeAll(where: unwanted)
+        for (key, task) in shiftTasks where unwanted(key) { task.cancel() }
+    }
+
+    /// Waits until every one of these shifts is rendered; returns those that
+    /// could not be.
+    func readyShifts(_ keys: Set<ShiftKey>) async -> [ShiftKey] {
+        let wanted = keys.filter { $0.semitones != 0 }
+        // The plain audio first: a shift is rendered from it.
+        let undecoded = Set(await ready(Set(wanted.map(\.track))))
+        var missing = wanted.filter { undecoded.contains($0.track) }
+        for key in wanted where !undecoded.contains(key.track) {
+            let audio = await withCheckedContinuation { continuation in
+                if let audio = self.audio(for: key.track, keyShift: key.semitones) {
+                    continuation.resume(returning: Optional(audio))
+                } else {
+                    shiftWaiters[key, default: []].append { continuation.resume(returning: $0) }
+                    prepareShifts([key], first: true)
+                }
+            }
+            if audio == nil { missing.insert(key) }
+        }
+        return Array(missing)
+    }
+
+    private func serveShift(_ key: ShiftKey, _ audio: AudioFrames?) {
+        guard let waiting = shiftWaiters.removeValue(forKey: key) else { return }
+        for done in waiting { done(audio) }
+    }
+
+    private func pumpShifts() {
+        while shifters < Self.maxShifters, !shiftQueue.isEmpty {
+            let key = shiftQueue.removeFirst()
+            guard let source = audio(for: key.track) else {
+                // Its audio went (the size limit) while it waited.
+                shifting.remove(key)
+                serveShift(key, nil)
+                continue
+            }
+            let destination = shiftedURL(key)
+            shifters += 1
+            let work = Task.detached(priority: .userInitiated) { () -> ShiftOutcome in
+                guard !FileManager.default.fileExists(atPath: destination.path) else { return .rendered }
+                do {
+                    try KeyShifter.render(source, semitones: key.semitones, to: destination)
+                    return .rendered
+                } catch is CancellationError {
+                    return .cancelled
+                } catch {
+                    return .failed(error.localizedDescription)
+                }
+            }
+            shiftTasks[key] = work
+            Task {
+                let outcome = await work.value
+                shiftTasks[key] = nil
+                shifters -= 1
+                shifting.remove(key)
+                if case .cancelled = outcome {
+                    // Nobody wants it any more; asked for again, it starts over.
+                    serveShift(key, nil)
+                    pumpShifts()
+                    return
+                }
+                let shifted = track(key.track) == nil ? nil : audio(for: key.track, keyShift: key.semitones)
+                if shifted == nil {
+                    unshiftable.insert(key)
+                    if case .failed(let failure) = outcome, let track = track(key.track) {
+                        lastError = "“\(track.displayName)” could not be shifted by \(key.semitones) semitones: \(failure)"
+                    }
+                }
+                serveShift(key, shifted)
+                enforceCacheLimit()
+                if shifted != nil { onTrackChange?(key.track) }
+                pumpShifts()
+            }
+        }
+    }
+
+    private func shiftedURL(_ key: ShiftKey) -> URL {
+        cacheDirectory.appendingPathComponent(CacheSweep.shiftedName(key.track, semitones: key.semitones))
+    }
+
+    /// The key-shift files in the cache, by track.
+    private func shiftedFiles() -> [UUID: [URL]] {
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: cacheDirectory.path) else { return [:] }
+        var files: [UUID: [URL]] = [:]
+        for name in names {
+            guard let shift = CacheSweep.shift(in: name) else { continue }
+            files[shift.id, default: []].append(cacheDirectory.appendingPathComponent(name))
+        }
+        return files
+    }
+
+    /// Lets go of a track's shifts and deletes their files.
+    private func removeShifts(of id: UUID, files: [URL]) {
+        for key in shiftedFrames.keys where key.track == id { shiftedFrames[key] = nil }
+        for url in files { try? FileManager.default.removeItem(at: url) }
+    }
+
     private func serve(_ id: UUID, _ audio: AudioFrames?) {
         guard let waiting = waiters.removeValue(forKey: id) else { return }
         for done in waiting { done(audio) }
@@ -283,19 +476,26 @@ final class Library {
         // which stats every track's cache file after every decode.
         guard cacheLimit != .max else { return }
         var entries: [AudioCacheLimit.Entry] = []
+        // A track's shifts weigh with it and go with it: without its
+        // audio no new one can be rendered anyway.
+        let shifts = shiftedFiles()
         for track in tracks {
             let values = try? cacheURL(track.id).resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
             guard let size = values?.fileSize else { continue }
-            entries.append(AudioCacheLimit.Entry(id: track.id, bytes: size,
+            let shiftBytes = (shifts[track.id] ?? []).reduce(0) {
+                $0 + ((try? $1.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0)
+            }
+            entries.append(AudioCacheLimit.Entry(id: track.id, bytes: size + shiftBytes,
                                                  lastUse: values?.contentModificationDate ?? .distantPast))
         }
-        let pinned = pinnedTracks().union(decoding).union(busy).union(queue)
+        let pinned = pinnedTracks().union(decoding).union(busy).union(queue).union(shifting.map(\.track))
         for id in AudioCacheLimit.evictions(entries, limit: cacheLimit, keeping: pinned) {
             // A mapping already handed out stays valid; the space comes back
             // when the last one is let go.
             frames[id] = nil
             marked.remove(id)
             try? FileManager.default.removeItem(at: cacheURL(id))
+            removeShifts(of: id, files: shifts[id] ?? [])
         }
     }
 
@@ -384,7 +584,9 @@ final class Library {
     func remove(_ ids: Set<UUID>) {
         let removed = tracks.filter { ids.contains($0.id) }
         tracks.removeAll { ids.contains($0.id) }
+        let shifts = shiftedFiles()
         for track in removed {
+            removeShifts(of: track.id, files: shifts[track.id] ?? [])
             frames[track.id] = nil
             serve(track.id, nil)
             waveforms[track.id] = nil
