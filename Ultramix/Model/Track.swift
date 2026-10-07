@@ -147,6 +147,10 @@ nonisolated struct Track: Identifiable, Codable, Sendable, Equatable {
     /// written by an analyser.
     var cuePoints: [CuePoint] = []
 
+    /// The track's stored stems (Stems.swift), once it has been separated.
+    /// Nil until a clip asks for them.
+    var stems: TrackStems?
+
     var bpm: Double? { manualBPM ?? analysis?.bpm }
     var firstBeatSeconds: Double? { manualFirstBeatSeconds ?? analysis?.firstBeatSeconds }
     var isCorrected: Bool { manualBPM != nil || manualFirstBeatSeconds != nil }
@@ -254,7 +258,7 @@ nonisolated struct Track: Identifiable, Codable, Sendable, Equatable {
     // every library saved before it.
     enum CodingKeys: String, CodingKey {
         case id, path, bookmark, title, artist, durationSeconds, addedAt
-        case state, analysis, failure, manualBPM, manualFirstBeatSeconds, sourcePath, key, cuePoints
+        case state, analysis, failure, manualBPM, manualFirstBeatSeconds, sourcePath, key, cuePoints, stems
     }
 
     /// Written by hand for one reason: a track with no cue points must save
@@ -277,6 +281,7 @@ nonisolated struct Track: Identifiable, Codable, Sendable, Equatable {
         try c.encodeIfPresent(sourcePath, forKey: .sourcePath)
         try c.encodeIfPresent(key, forKey: .key)
         if !cuePoints.isEmpty { try c.encode(cuePoints, forKey: .cuePoints) }
+        try c.encodeIfPresent(stems, forKey: .stems)
     }
 
     init(from decoder: Decoder) throws {
@@ -303,6 +308,9 @@ nonisolated struct Track: Identifiable, Codable, Sendable, Equatable {
             result.append(cue)
         }
         .sorted { $0.number < $1.number }
+        // Unreadable, the stems are as good as not there: the track is
+        // separated again, rather than the library failing to load.
+        stems = (try? c.decodeIfPresent(TrackStems.self, forKey: .stems)) ?? nil
         // An analysis interrupted by quitting is not running any more.
         if state == .running { state = .pending }
     }

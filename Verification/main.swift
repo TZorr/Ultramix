@@ -831,7 +831,7 @@ section("document: round-trip and old files") {
     let restored = try! MixDocument.load(from: data)
     check(restored == doc, "every field survives a save")
     let text = String(data: data, encoding: .utf8)!
-    check(text.contains("\"version\" : 3"), "saved as format 3")
+    check(text.contains("\"version\" : 4"), "saved as format 4")
     // A mix is passed around; a bookmark would carry the absolute paths of
     // the Mac that made it into a field nobody reads.
     check(!text.contains("bookmark"), "a track reference writes no bookmark")
@@ -851,7 +851,8 @@ section("document: round-trip and old files") {
     check(first?.clips.first?.automation.isEmpty == true, "a v1 mix opens with no automation")
     check(first?.lanes.map(\.muted) == [true, false, false] && first?.lanes[1].solo == true && first?.lanes[2].color == "FF0000",
           "and its lanes' switches and colours")
-    check((try? MixDocument.load(from: Data(#"{"format":"ultramix-mix","version":4}"#.utf8))) == nil, "format 4 is refused")
+    check((try? MixDocument.load(from: Data(#"{"format":"ultramix-mix","version":5}"#.utf8))) == nil, "format 5 is refused")
+    check((try? MixDocument.load(from: Data(#"{"format":"ultramix-mix","version":3}"#.utf8))) != nil, "format 3 still opens")
 
     // A mix written before the bookmark was dropped: the key is passed over
     // rather than refused, so no format bump was needed for it.
@@ -936,6 +937,15 @@ section("library file: what is saved is what loads") {
     track.setCorrection(bpm: 125, firstBeatSeconds: 0.5)
     let restored = try? Track.decodeLibrary(Track.encodeLibrary([track]))
     check(restored == [track], "a saved library reads back unchanged")
+
+    let plain = String(data: try! Track.encodeLibrary([track]), encoding: .utf8)!
+    check(!plain.contains("stems"), "a track never separated writes no stems")
+    track.stems = TrackStems(tag: StemSeparator.tag, frames: 13_781_250)
+    check((try? Track.decodeLibrary(Track.encodeLibrary([track]))) == [track], "its stems read back")
+    check(track.stems?.isCurrent == true && TrackStems(tag: "ht0", frames: 1).isCurrent == false, "current: this separator's tag")
+    let broken = plain.replacingOccurrences(of: "\"title\"", with: "\"stems\" : 42, \"title\"")
+    let loaded = try? Track.decodeLibrary(Data(broken.utf8))
+    check(loaded?.first?.title == "A" && loaded?.first?.stems == nil, "unreadable stems load as none, the library still loads")
 }
 
 section("beatgrid correction: confirming what is already set is not a change") {
@@ -1037,7 +1047,8 @@ section("workspace: structure, relative paths, unique names") {
     let base = files.temporaryDirectory.appendingPathComponent("ultramix-ws-\(UUID().uuidString)")
     defer { try? files.removeItem(at: base) }
     let workspace = try! Workspace.prepare(at: base)
-    for folder in [workspace.audio, workspace.mixes, workspace.bounces, workspace.cache] {
+    check(workspace.stems.lastPathComponent == "Stems", "\(workspace.stems.lastPathComponent)")
+    for folder in [workspace.audio, workspace.mixes, workspace.bounces, workspace.stems, workspace.cache] {
         var isDirectory: ObjCBool = false
         check(files.fileExists(atPath: folder.path, isDirectory: &isDirectory) && isDirectory.boolValue,
               "\(folder.lastPathComponent)/ created")
@@ -1135,6 +1146,24 @@ section("cache sweep: only what no track owns, nothing it did not write") {
     let orphans = Set(CacheSweep.orphans(among: names, keeping: [kept]))
     check(orphans == Set([names[2], names[3], names[4], names[9]]), "orphans \(orphans.sorted())")
     check(CacheSweep.orphans(among: names, keeping: [kept, gone]) == [names[4]], "with both tracks, only the leftover .partial goes")
+
+    // Decoded stems are cache files named by their track: they go with it.
+    let decoded = [StemFiles.cachedName(kept, .drums), StemFiles.cachedName(gone, .vocals)]
+    check(CacheSweep.orphans(among: decoded, keeping: [kept]) == [decoded[1]], "a removed track's decoded stems go")
+    check(CacheSweep.shift(in: decoded[0]) == nil, "a decoded stem is not a key shift")
+
+    // The Stems folder: a removed track's, another separator's, and an
+    // interrupted write's leftovers go; nothing else is touched.
+    let stored = [
+        StemFiles.storedName(kept, .drums), StemFiles.storedName(kept, .vocals),
+        StemFiles.storedName(gone, .bass),
+        "\(kept.uuidString).ht0.drums.caf",
+        ".\(StemFiles.storedName(kept, .bass)).\(UUID().uuidString).partial.caf",
+        "\(kept.uuidString).ht1.other.caf", "\(gone.uuidString).ht1.drums.wav", "Notes.caf", "readme.txt",
+    ]
+    check(stored[0] == "\(kept.uuidString).ht1.drums.caf", stored[0])
+    let swept = Set(CacheSweep.stemOrphans(among: stored, keeping: [kept]))
+    check(swept == Set([stored[2], stored[3], stored[4]]), "stem orphans \(swept.sorted())")
 }
 
 section("undo history") {
@@ -2058,6 +2087,128 @@ section("clip gain: range, input, split, duplicate, file") {
     """
     let loaded = (try? MixDocument.load(from: Data(typed.utf8)))?.clips.map(\.gainDB)
     check(loaded == [-2, -24], "a typed −1.5 loads as −2, an impossible −100 as −24: \(String(describing: loaded))")
+}
+
+section("clip stems: gain, mute, automation, split, duplicate, file, undo") {
+    var doc = MixDocument()
+    let a = try! doc.addClip(trackID: trackA, grid: testGrid, lane: 0, startBeat: 0, grids: grids)
+    check(doc.clips[0].parts.isNeutral && doc.clips[0].parts == ClipParts(), "a new clip plays its own audio")
+    doc.setPartGain(a, .drums, -40)
+    check(doc.clips[0].parts.drums.gainDB == -24, "held to −24: \(doc.clips[0].parts.drums.gainDB)")
+    doc.setPartGain(a, .bass, 20)
+    check(doc.clips[0].parts.bass.gainDB == 12, "held to +12")
+    doc.setPartGain(a, .vocals, -1.6)
+    check(doc.clips[0].parts.vocals.gainDB == -2, "whole dB: \(doc.clips[0].parts.vocals.gainDB)")
+    doc.stepPartGain(a, .vocals, by: 1)
+    check(doc.clips[0].parts.vocals.gainDB == -1, "one click up")
+    doc.setPartGain(a, .bass, 12)
+    let atCeiling = doc
+    doc.stepPartGain(a, .bass, by: 1)
+    check(doc == atCeiling, "no step above +12, and nothing changed")
+    doc.setPartMuted(a, .other, true)
+    check(doc.clips[0].parts.other.muted && !doc.clips[0].parts.isNeutral, "muted")
+    for stem in Stem.allCases { doc.resetPart(a, stem) }
+    check(doc.clips[0].parts.isNeutral, "reset: neutral again")
+
+    check(ClipPart().gain == 1 && ClipPart(gainDB: -6).gain == Float(Automation.gain(dB: -6)), "−6 dB is the clip gain's −6 dB")
+    check(ClipPart(gainDB: 6, muted: true).gain == 0, "muted is silence, whatever the level")
+    check(!ClipPart(muted: true).isNeutral && !ClipPart(gainDB: -1).isNeutral, "anything set is not neutral")
+
+    // A stem row is edited by the same operations as the clip, with a part.
+    let node = doc.addAutomationNode(clip: a, part: .vocals, kind: .volume, beat: 8, value: -10, grids: grids)
+    check(node != nil && doc.clips[0].parts.vocals.automation.volume.count == 1 && doc.clips[0].automation.isEmpty,
+          "a node on the vocals row is the vocals', not the clip's")
+    check(doc.clips[0].parts.playsStems && doc.clips[0].parts.hasAutomation, "a stem with automation needs the stems")
+    let moved = doc.moveAutomationNode(clip: a, part: .vocals, kind: .volume, from: node!, toBeat: 12, value: -20, grids: grids)
+    check(moved?.value == -20 && doc.clips[0].parts.vocals.automation.volume == [moved!], "moved on its row")
+    doc.addAutomationNode(clip: a, kind: .volume, beat: 12, value: -20, grids: grids)
+    doc.resetAutomationNode(moved!, kind: .volume, clip: a, part: .vocals)
+    check(doc.clips[0].parts.vocals.automation.volume.first?.value == AutomationKind.volume.restValue
+          && doc.clips[0].automation.volume.first?.value == -20, "a reset on the row leaves the clip's own alone")
+    let stroke = AutomationGesture(kind: .lowPass, start: 4, end: 20, shape: .sine, period: 1, low: 0.2, high: 0.9)
+    check(doc.addGesture(stroke, clip: a, part: .drums, grids: grids) && doc.clips[0].parts.drums.automation.gestures.count == 1,
+          "a gesture on the drums row")
+    let gestureID = doc.clips[0].parts.drums.automation.gestures[0].id
+    let picked = doc.clips[0].parts.vocals.automation.selection(kind: .volume, beats: 0...64, values: -60...12)
+    doc.deleteAutomation(AutomationSelection(kind: .volume, part: .vocals, nodes: [a: picked.nodes]))
+    check(doc.clips[0].parts.vocals.automation.volume.isEmpty && doc.clips[0].automation.volume.count == 1,
+          "a selection on one row deletes from that row only")
+    doc.removeGesture(gestureID, clip: a, part: .drums)
+    check(doc.clips[0].parts.drums.automation.gestures.isEmpty, "and a gesture comes off its row")
+    doc.addAutomationNode(clip: a, part: .bass, kind: .pan, beat: 4, value: 0.5, grids: grids)
+    doc.setPartGain(a, .bass, 12)
+    try! doc.removeAutomation(onClips: [a])
+    check(doc.clips[0].automation.isEmpty && doc.clips[0].parts.bass.automation.isEmpty && doc.clips[0].parts.bass.gainDB == 12,
+          "⌥⌫ takes the rows' automation too, and leaves their gains")
+
+    // Locked: gain and mute are sound, not place; automation stays put.
+    doc.clips[0].locked = true
+    doc.setPartMuted(a, .vocals, true)
+    check(doc.clips[0].parts.vocals.muted, "a locked clip's stem can be muted")
+    check(doc.addAutomationNode(clip: a, part: .vocals, kind: .volume, beat: 2, value: -3, grids: grids) == nil,
+          "but no automation drawn on its rows")
+    doc.clips[0].locked = false
+    doc.setPartGain(a, .drums, -6)
+    doc.addAutomationNode(clip: a, part: .other, kind: .highPass, beat: 6, value: 0.4, grids: grids)
+
+    let span = doc.geometry(doc.clips[0], grids)!
+    let right = try! doc.splitClip(a, at: ((span.bodyStart + span.bodyEnd) / 2).rounded(), grids: grids)
+    check(doc.clips.allSatisfy { $0.parts.drums.gainDB == -6 && $0.parts.vocals.muted && $0.parts.other.automation.highPass.count == 1 },
+          "both halves of a split keep them")
+    let copy = try! doc.duplicateClip(right, grids: grids)
+    check(doc.clips.first { $0.id == copy }?.parts == doc.clips[0].parts, "a duplicate keeps them")
+
+    // Undo is snapshots of the document: a stem edit is one step like any.
+    var history = UndoHistory<MixDocument>()
+    let before = doc
+    history.record(doc)
+    doc.setPartGain(a, .bass, -9)
+    check(history.undo(from: doc) == before, "undo brings the stem back as it was")
+
+    let restored = try! MixDocument.load(from: try! doc.fileData())
+    check(restored == doc, "the stems survive a save")
+    let json = String(data: try! doc.fileData(), encoding: .utf8)!
+    check(json.contains("\"parts\"") && json.contains("\"vocals\"") && !json.contains("\"stems\""), "written as parts: \(json.count)")
+    var plain = MixDocument()
+    try! plain.addClip(trackID: trackA, grid: testGrid, lane: 0, startBeat: 0, grids: grids)
+    check(!String(data: try! plain.fileData(), encoding: .utf8)!.contains("parts"), "a clip with neutral stems writes none")
+
+    // The stem levels before stems had automation load as parts.
+    let typed = """
+    {"clips":[{"id":"\(UUID().uuidString)","trackID":"\(trackA.uuidString)","anchorBeat":8,
+               "stems":{"drums":{"dB":-1.5},"bass":{"dB":-100},"vocals":{"muted":true},"piano":{"dB":3}}},
+              {"id":"\(UUID().uuidString)","trackID":"\(trackA.uuidString)","anchorBeat":900,"parts":"loud"}]}
+    """
+    let loaded = try? MixDocument.load(from: Data(typed.utf8))
+    let first = loaded?.clips.first?.parts
+    check(first?.drums.gainDB == -2 && first?.bass.gainDB == -24 && first?.vocals.muted == true && first?.other.isNeutral == true,
+          "old stem levels held and rounded, an unknown stem ignored: \(String(describing: first))")
+    check(loaded?.clips.last?.parts.isNeutral == true, "unreadable stems load as neutral, the mix still loads")
+}
+
+section("lane geometry: shared by weight, held to the minimums") {
+    let equal = LaneGeometry.heights(total: 600, expanded: [false, false, false])
+    check(equal == [200, 200, 200], "nothing expanded: a third each, as before: \(equal)")
+    let one = LaneGeometry.heights(total: 600, expanded: [false, true, false])
+    check(one == [120, 360, 120], "one expanded counts three: \(one)")
+    let all = LaneGeometry.heights(total: 600, expanded: [true, true, true])
+    check(all == [200, 200, 200], "all expanded: equal again")
+    // 210 shared 3 : 1 : 1 would leave the collapsed lanes 42 each; they
+    // are held at 44, and the expanded lane takes the rest.
+    let tight = LaneGeometry.heights(total: 210, expanded: [true, false, false])
+    check(tight == [122, 44, 44], "a collapsed lane is held at 44: \(tight)")
+    let small = LaneGeometry.heights(total: 300, expanded: [true, true, false])
+    check(small.reduce(0, +) >= 300 - 1e-9 && small.allSatisfy { $0 >= 44 } && small[0] >= LaneGeometry.minimumExpanded,
+          "two expanded in a small window: every minimum held: \(small)")
+    let cramped = LaneGeometry.heights(total: 100, expanded: [true, false, false])
+    check(cramped == [LaneGeometry.minimumExpanded, 44, 44], "below the minimums they run past the bottom: \(cramped)")
+    for height in [116.0, 150, 360, 900] {
+        let rows = LaneGeometry.rows(laneHeight: height)
+        check(abs(rows.clip + 4 * rows.stem - height) < 1e-9 && rows.stem >= 18 && rows.clip >= 44 - 1e-9,
+              "a \(height) lane: \(rows) adds up and keeps its minimums")
+    }
+    let roomy = LaneGeometry.rows(laneHeight: 360)
+    check(roomy.clip == 120 && roomy.stem == 60, "a third for the clip, a sixth each for the stems: \(roomy)")
 }
 
 section("renderer: clip gain scales the clip exactly") {
@@ -4659,6 +4810,766 @@ section("key shift: the clip, its file, the plan and the key it makes") {
                  CacheSweep.shiftedName(gone, pitch: PitchShift(semitones: -1, cents: 10)),
                  ".\(CacheSweep.shiftedName(track, pitch: PitchShift(semitones: 3, cents: 0))).\(UUID().uuidString).partial"]
     check(Set(CacheSweep.orphans(among: names, keeping: [track])) == Set(names[1...]), "a removed track's shifts go")
+}
+
+// MARK: - Stems
+
+/// The test signal Tools/convert-demucs.py separates for its reference
+/// values, from the same formula (`test_signal` there): planar stereo.
+func demucsTestSignal(seconds: Double) -> [Float] {
+    let n = Int((seconds * 44100).rounded())
+    var out = [Float](repeating: 0, count: 2 * n)
+    var state: UInt32 = 0x1234_5678
+    for i in 0..<n {
+        let t = Double(i) / 44100
+        let tb = t - (t / 0.5).rounded(.down) * 0.5
+        let ts = (t - 0.5) - (t - 0.5).rounded(.down)
+        state = 1_664_525 &* state &+ 1_013_904_223
+        let noise = Double(state >> 8) / 8_388_608 - 1
+        let kick = 0.8 * exp(-30 * tb) * sin(2 * Double.pi * (55 * tb + 2.5 * (1 - exp(-40 * tb))))
+        let snare = 0.3 * exp(-25 * ts) * noise
+        let bass = 0.35 * (0.6 + 0.4 * exp(-8 * tb)) * sin(2 * Double.pi * 55 * t)
+        let vibrato = 0.2 * sin(2 * Double.pi * 5 * t)
+        var voice = 0.0
+        for h in 1...6 { voice += sin(2 * Double.pi * 220 * Double(h) * t + Double(h) * vibrato) / Double(h) }
+        voice *= 0.12 * (0.5 - 0.5 * cos(2 * Double.pi * t / 4))
+        out[i] = Float(0.5 * (kick + 0.9 * snare + bass + 0.8 * voice))
+        out[n + i] = Float(0.5 * (kick + 1.1 * snare + bass + 1.2 * voice))
+    }
+    return out
+}
+
+/// The first `DemucsSTFT.segment` frames of each channel of a planar signal.
+func demucsSegment(_ planar: [Float]) -> [Float] {
+    let n = planar.count / 2, l = DemucsSTFT.segment
+    return Array(planar[0..<l]) + Array(planar[n..<n + l])
+}
+
+section("demucs: the test signal is the converter's") {
+    // From Tools/demucs-reference.json (numpy, float64 cast to float32).
+    let x = demucsTestSignal(seconds: 12)
+    let n = x.count / 2
+    let first: [[Double]] = [[-4.220398608367759e-08, 0.010195717215538025, 0.02036873809993267, 0.012382101267576218, 3.19160278650088e-07], [-5.15826492630822e-08, 0.010195784270763397, 0.020368659868836403, 0.01513367984443903, 3.900847787008388e-07]]
+    for c in 0..<2 {
+        for (k, i) in [0, 1, 2, 22050, 44100].enumerated() {
+            check(near(Double(x[c * n + i]), first[c][k], 1e-9), "channel \(c) sample \(i): \(x[c * n + i])")
+        }
+    }
+    let sumSquares = [5850.720338075033, 6310.306794556616]
+    for c in 0..<2 {
+        let s = x[c * n..<(c + 1) * n].reduce(0.0) { $0 + Double($1) * Double($1) }
+        check(abs(s - sumSquares[c]) / sumSquares[c] < 1e-9, "channel \(c) energy \(s)")
+    }
+}
+
+section("demucs stft: the spectrum htdemucs's own _spec makes") {
+    // torch.stft as Demucs pads it, from Tools/demucs-reference.json: the
+    // first segment of the 12 s test signal, (channel, bin, frame, re, im).
+    let probes: [(Int, Int, Int, Double, Double)] = [
+        (0, 0, 0, 1.0961464643478394, 0.0),
+        (0, 0, 1, 0.16399067640304565, 0.0),
+        (0, 0, 100, 0.0022872816771268845, 0.0),
+        (0, 0, 335, -0.41520631313323975, 0.0),
+        (0, 3, 0, 1.249584436416626, -0.8522442579269409),
+        (0, 3, 1, -0.07104069739580154, -0.18933704495429993),
+        (0, 3, 100, 0.020894154906272888, 0.015574730932712555),
+        (0, 3, 335, -0.4199097752571106, -0.5688954591751099),
+        (0, 47, 0, 0.03962889313697815, -0.041204504668712616),
+        (0, 47, 1, -0.007663409225642681, -0.006138239521533251),
+        (0, 47, 100, -0.00026371105923317373, -7.892725261626765e-05),
+        (0, 47, 335, -0.004275637678802013, -0.003247239161282778),
+        (0, 200, 0, -0.002928222995251417, 1.1859092410304584e-05),
+        (0, 200, 1, -0.000502334616612643, 1.1908208762179129e-05),
+        (0, 200, 100, 6.611841740777891e-08, 3.2764134516583e-08),
+        (0, 200, 335, 0.00021878574625588953, 0.0003178837359882891),
+        (0, 1023, 0, 9.617209434509277e-05, -9.63062047958374e-05),
+        (0, 1023, 1, -1.6689300537109375e-05, -1.6497448086738586e-05),
+        (0, 1023, 100, 5.587935447692871e-09, -3.2014213502407074e-10),
+        (0, 1023, 335, 1.8477439880371094e-06, 3.127753734588623e-05),
+        (0, 2047, 0, 4.8041343688964844e-05, -4.807114601135254e-05),
+        (0, 2047, 1, -8.32974910736084e-06, -8.273869752883911e-06),
+        (0, 2047, 100, 5.820766091346741e-10, 3.7834979593753815e-09),
+        (0, 2047, 335, -1.3977289199829102e-05, 1.1160969734191895e-05),
+        (1, 0, 0, 1.0961463451385498, 0.0),
+        (1, 0, 1, 0.16399070620536804, 0.0),
+        (1, 0, 100, 0.002272277604788542, 0.0),
+        (1, 0, 335, -0.4159926176071167, 0.0),
+        (1, 3, 0, 1.249584436416626, -0.8522442579269409),
+        (1, 3, 1, -0.07104060053825378, -0.18933707475662231),
+        (1, 3, 100, 0.02087697573006153, 0.015565335750579834),
+        (1, 3, 335, -0.4202210307121277, -0.5696330070495605),
+        (1, 47, 0, 0.03962913155555725, -0.04120418429374695),
+        (1, 47, 1, -0.00766349583864212, -0.006137782242149115),
+        (1, 47, 100, -0.00039507824112661183, -0.00011720172187779099),
+        (1, 47, 335, -0.004512897692620754, -0.0034449140075594187),
+        (1, 200, 0, -0.002928264671936631, 1.1854315744130872e-05),
+        (1, 200, 1, -0.0005023633129894733, 1.1903736776730511e-05),
+        (1, 200, 100, 9.65838751199044e-08, 6.295348953244684e-08),
+        (1, 200, 335, 0.000246475450694561, 0.0003594099835027009),
+        (1, 1023, 0, 9.612739086151123e-05, -9.632110595703125e-05),
+        (1, 1023, 1, -1.6709789633750916e-05, -1.6495585441589355e-05),
+        (1, 1023, 100, 1.5133991837501526e-09, -2.0954757928848267e-09),
+        (1, 1023, 335, 1.1175870895385742e-06, 3.970414400100708e-05),
+        (1, 2047, 0, 4.8041343688964844e-05, -4.8041343688964844e-05),
+        (1, 2047, 1, -8.344650268554688e-06, -8.288770914077759e-06),
+        (1, 2047, 100, 1.862645149230957e-09, 2.7939677238464355e-09),
+        (1, 2047, 335, -1.780688762664795e-05, 1.3083219528198242e-05)
+    ]
+    let stft = DemucsSTFT()
+    let audio = demucsSegment(demucsTestSignal(seconds: 12))
+    var spec = [Float](repeating: .nan, count: 4 * DemucsSTFT.planeCount)
+    audio.withUnsafeBufferPointer { a in spec.withUnsafeMutableBufferPointer { stft.forward(a.baseAddress!, into: $0.baseAddress!) } }
+    let plane = DemucsSTFT.planeCount, frames = DemucsSTFT.frames
+    for (c, f, t, re, im) in probes {
+        let r = Double(spec[2 * c * plane + f * frames + t]), i = Double(spec[(2 * c + 1) * plane + f * frames + t])
+        let tolerance = 1e-5 + 1e-4 * hypot(re, im)
+        check(near(r, re, tolerance) && near(i, im, tolerance), "c \(c) bin \(f) frame \(t): \(r) \(i), torch \(re) \(im)")
+    }
+    let energy = spec.reduce(0.0) { $0 + Double($1) * Double($1) }
+    check(abs(energy - 6007.772434731718) / 6007.772434731718 < 1e-5, "energy \(energy)")
+}
+
+section("demucs istft: gives back what it was given, and what torch's istft gives") {
+    let stft = DemucsSTFT()
+    let plane = DemucsSTFT.planeCount, frames = DemucsSTFT.frames, n = DemucsSTFT.segment
+    var spec = [Float](repeating: 0, count: 4 * plane)
+    var back = [Float](repeating: .nan, count: 2 * n)
+
+    // A spectrum made from a signal gives the signal back - inside the
+    // segment, in torch too (even in float64): Demucs drops the Nyquist bin
+    // (so the signal has to have nothing there, unlike white noise), and the
+    // frames it drops at each end leave the first and last 4096 samples off
+    // by up to 0.2. Those ends are what the chunks' overlap weighting fades
+    // out; the torch values below check them, samples 0, 1 and the last.
+    var generator = SplitMix(seed: 31)
+    let sines = (0..<16).map { _ in (hz: Double(generator.uniform(20, 16_000)), phase: Double(generator.uniform(0, 6.28))) }
+    var tones = [Float](repeating: 0, count: 2 * n)
+    for c in 0..<2 {
+        for i in 0..<n {
+            var v = 0.0
+            for (k, s) in sines.enumerated() where k % 2 == c || k < 4 {
+                v += 0.05 * sin(2 * Double.pi * s.hz * Double(i) / 44100 + s.phase)
+            }
+            tones[c * n + i] = Float(v)
+        }
+    }
+    tones.withUnsafeBufferPointer { a in spec.withUnsafeMutableBufferPointer { stft.forward(a.baseAddress!, into: $0.baseAddress!) } }
+    spec.withUnsafeBufferPointer { s in back.withUnsafeMutableBufferPointer { stft.inverse(s.baseAddress!, into: $0.baseAddress!) } }
+    var worst: Float = 0
+    for c in 0..<2 {
+        for i in DemucsSTFT.fftSize..<(n - DemucsSTFT.fftSize) { worst = max(worst, abs(tones[c * n + i] - back[c * n + i])) }
+    }
+    check(worst < 1e-5, "round trip worst error \(worst) inside the segment")
+
+    // A spectrum that is no STFT of anything, as the network's output is:
+    // the test signal's, times 0.5 + 0.5 cos(0.01 bin + 0.1 frame) - torch's
+    // _ispec of it, from Tools/demucs-reference.json, (channel, sample, value).
+    let probes: [(Int, Int, Double)] = [
+        (0, 0, 0.016499780118465424),
+        (0, 1, 0.01920648291707039),
+        (0, 1000, -0.03740702196955681),
+        (0, 171990, 7.91773618402658e-06),
+        (0, 343979, -0.0023643234744668007),
+        (1, 0, 0.016499802470207214),
+        (1, 1, 0.019206536933779716),
+        (1, 1000, -0.03740469738841057),
+        (1, 171990, 8.596906809543725e-06),
+        (1, 343979, -0.002368507906794548)
+    ]
+    let audio = demucsSegment(demucsTestSignal(seconds: 12))
+    audio.withUnsafeBufferPointer { a in spec.withUnsafeMutableBufferPointer { stft.forward(a.baseAddress!, into: $0.baseAddress!) } }
+    for p in 0..<4 {
+        for f in 0..<DemucsSTFT.bins {
+            for t in 0..<frames {
+                spec[p * plane + f * frames + t] *= Float(0.5 + 0.5 * cos(0.01 * Double(f) + 0.1 * Double(t)))
+            }
+        }
+    }
+    spec.withUnsafeBufferPointer { s in back.withUnsafeMutableBufferPointer { stft.inverse(s.baseAddress!, into: $0.baseAddress!) } }
+    for (c, i, value) in probes {
+        let y = Double(back[c * n + i])
+        check(near(y, value, 1e-5 + 1e-4 * abs(value)), "channel \(c) sample \(i): \(y), torch \(value)")
+    }
+    let energy = back.reduce(0.0) { $0 + Double($1) * Double($1) }
+    check(abs(energy - 3071.063043454875) / 3071.063043454875 < 1e-5, "energy \(energy)")
+}
+
+/// The Demucs model, compiled into the temporary directory as Beat This!
+/// is, and compiled again when the package is newer than that.
+func demucsModel() -> DemucsModel? {
+    let package = URL(fileURLWithPath: "Ultramix/Resources/Demucs_htdemucs.mlpackage")
+    let cached = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("Demucs_htdemucs.mlmodelc")
+    let files = FileManager.default
+    func modified(_ url: URL) -> Date {
+        (try? files.attributesOfItem(atPath: url.appendingPathComponent("Manifest.json").path)[.modificationDate] as? Date)
+            ?? (try? files.attributesOfItem(atPath: url.path)[.modificationDate] as? Date) ?? .distantPast
+    }
+    do {
+        if files.fileExists(atPath: cached.path) && modified(cached) < modified(package) {
+            try files.removeItem(at: cached)
+        }
+        if !files.fileExists(atPath: cached.path) {
+            let compiled = try MLModel.compileModel(at: package)
+            if compiled.standardizedFileURL != cached.standardizedFileURL {
+                try files.moveItem(at: compiled, to: cached)
+            }
+        }
+        return try DemucsModel(compiledURL: cached)
+    } catch {
+        check(false, "the Demucs model could not be compiled: \(error)")
+        return nil
+    }
+}
+
+/// This process's physical footprint and its peak so far, in MB.
+func physicalFootprint() -> (now: Double, peak: Double) {
+    var info = task_vm_info_data_t()
+    var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<natural_t>.size)
+    let result = withUnsafeMutablePointer(to: &info) {
+        $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+            task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+        }
+    }
+    guard result == KERN_SUCCESS else { return (0, 0) }
+    return (Double(info.phys_footprint) / 1e6, Double(info.ledger_phys_footprint_peak) / 1e6)
+}
+
+section("demucs: the network matches PyTorch") {
+    // The first segment of the 12 s test signal as the separator feeds it:
+    // normalised over the whole signal (separate.py), then per segment
+    // (HTDemucs.forward). PyTorch's fp32 output, from
+    // Tools/demucs-reference.json: (stem, channel, sample, value), stems in
+    // the order drums, bass, vocals, still in the normalised scale.
+    let probes: [(Int, Int, Int, Double)] = [
+        (0, 0, 0, 0.46923619508743286),
+        (0, 0, 1, 0.567497968673706),
+        (0, 0, 1000, -1.4967987537384033),
+        (0, 0, 171990, -0.0018293969333171844),
+        (0, 0, 343979, 0.02513827383518219),
+        (0, 1, 0, 0.43812549114227295),
+        (0, 1, 1, 0.5448779463768005),
+        (0, 1, 1000, -1.490251064300537),
+        (0, 1, 171990, -0.0015073483809828758),
+        (0, 1, 343979, 0.0192588921636343),
+        (1, 0, 0, -0.07473123073577881),
+        (1, 0, 1, -0.09422775357961655),
+        (1, 0, 1000, 1.1549663543701172),
+        (1, 0, 171990, 0.0008153244853019714),
+        (1, 0, 343979, -0.05433562025427818),
+        (1, 1, 0, -0.10061157494783401),
+        (1, 1, 1, -0.12393873929977417),
+        (1, 1, 1000, 1.1506410837173462),
+        (1, 1, 171990, 0.0002068597823381424),
+        (1, 1, 343979, -0.07359526306390762),
+        (2, 0, 0, -0.004805394448339939),
+        (2, 0, 1, -0.004071523435413837),
+        (2, 0, 1000, 1.6123405657708645e-05),
+        (2, 0, 171990, -0.0005657387664541602),
+        (2, 0, 343979, -0.0013521634973585606),
+        (2, 1, 0, -0.0055124154314398766),
+        (2, 1, 1, -0.004738462623208761),
+        (2, 1, 1000, -5.2830553613603115e-05),
+        (2, 1, 171990, -0.0006113646668381989),
+        (2, 1, 343979, -0.0015194753650575876)
+    ]
+    guard let model = demucsModel() else { return }
+    let l = DemucsSTFT.segment, plane = DemucsSTFT.planeCount
+    let signal = demucsTestSignal(seconds: 12)
+    let n = signal.count / 2
+    var sum = 0.0
+    for i in 0..<n { sum += (Double(signal[i]) + Double(signal[n + i])) / 2 }
+    let mean = sum / Double(n)
+    var squares = 0.0
+    for i in 0..<n {
+        let d = (Double(signal[i]) + Double(signal[n + i])) / 2 - mean
+        squares += d * d
+    }
+    let std = (squares / Double(n - 1)).squareRoot()
+    var audio = demucsSegment(signal).map { Float((Double($0) - mean) / std) }
+    var spec = [Float](repeating: 0, count: DemucsModel.specCount)
+    let stft = DemucsSTFT()
+    audio.withUnsafeBufferPointer { a in spec.withUnsafeMutableBufferPointer { stft.forward(a.baseAddress!, into: $0.baseAddress!) } }
+    let specNorm = spec.withUnsafeMutableBufferPointer { DemucsModel.normalise($0.baseAddress!, count: $0.count) }
+    let audioNorm = audio.withUnsafeMutableBufferPointer { DemucsModel.normalise($0.baseAddress!, count: $0.count) }
+    check(near(specNorm.mean, -3.911616181290888e-06, 1e-7) && abs(specNorm.std - 0.43662994193473365) < 1e-5 * 0.43662994193473365,
+          "spectrum mean \(specNorm.mean), std \(specNorm.std)")
+    check(near(audioNorm.mean, 0.0001313672662092618, 1e-7) && abs(audioNorm.std - 1.0081318601239773) < 1e-6 * 1.0081318601239773,
+          "audio mean \(audioNorm.mean), std \(audioNorm.std)")
+
+    var time = [Float](repeating: .nan, count: DemucsModel.timeCount)
+    var freq = [Float](repeating: .nan, count: DemucsModel.freqCount)
+    func predict() throws {
+        try audio.withUnsafeMutableBufferPointer { a in
+            try spec.withUnsafeMutableBufferPointer { s in
+                try time.withUnsafeMutableBufferPointer { t in
+                    try freq.withUnsafeMutableBufferPointer { f in
+                        try model.predict(audio: a.baseAddress!, spec: s.baseAddress!, time: t.baseAddress!, freq: f.baseAddress!)
+                    }
+                }
+            }
+        }
+    }
+    let before = physicalFootprint()
+    do { try predict() } catch {
+        check(false, "prediction failed: \(error)")
+        return
+    }
+    let started = Date()
+    for _ in 0..<3 { try? predict() }
+    let perSegment = Date().timeIntervalSince(started) / 3
+    let after = physicalFootprint()
+    print(String(format: "     %.3f s a segment (%.1f s for 5 minutes); footprint %.0f MB before, %.0f MB after, peak %.0f MB",
+                 perSegment, perSegment * 300 * 44100 / (0.75 * Double(l)), before.now, after.now, after.peak))
+
+    check(time.allSatisfy(\.isFinite) && freq.allSatisfy(\.isFinite), "every output value is a number")
+    func rms(_ values: ArraySlice<Float>) -> Double {
+        (values.reduce(0.0) { $0 + Double($1) * Double($1) } / Double(values.count)).squareRoot()
+    }
+    let timeRMS = [0.5011085671768386, 0.7533240716763027, 0.002046441210371688]
+    let freqRMS = [0.15455921794507774, 0.03865518106915126, 0.06274261177554001]
+    for s in 0..<3 {
+        let t = rms(time[(s * 2 * l)..<((s + 1) * 2 * l)]), q = rms(freq[(s * 4 * plane)..<((s + 1) * 4 * plane)])
+        check(abs(t - timeRMS[s]) <= 0.01 * timeRMS[s] + 1e-4, "stem \(s) time RMS \(t), PyTorch \(timeRMS[s])")
+        check(abs(q - freqRMS[s]) <= 0.01 * freqRMS[s] + 1e-4, "stem \(s) spectrum RMS \(q), PyTorch \(freqRMS[s])")
+    }
+    for (s, c, i, value) in probes {
+        let v = Double(time[s * 2 * l + c * l + i])
+        check(near(v, value, 3e-3), "stem \(s) channel \(c) sample \(i): \(v), PyTorch \(value)")
+    }
+}
+
+section("stems: chunk layout and the triangle") {
+    // 20 s: three full segments every 257 985 frames, and a last one of
+    // 882 000 - 773 955 = 108 045 frames, centred in a full segment:
+    // (343 980 - 108 045) / 2 = 117 967 frames of the song before it.
+    let chunks = StemSeparator.chunks(frames: 882_000)
+    check(chunks.map(\.offset) == [0, 257_985, 515_970, 773_955], "\(chunks.map(\.offset))")
+    check(chunks.map(\.length) == [343_980, 343_980, 343_980, 108_045], "\(chunks.map(\.length))")
+    check(chunks[3].start == 655_988 && chunks[3].trim == 117_967, "\(chunks[3].start) \(chunks[3].trim)")
+    check(chunks[0].start == 0 && chunks[0].trim == 0, "a full chunk starts where it goes")
+    // Shorter than a segment: one chunk, the song in the middle of zeros.
+    let short = StemSeparator.chunks(frames: 220_500)
+    check(short == [StemSeparator.Chunk(offset: 0, length: 220_500)] && short[0].start == -61_740, "\(short)")
+    check(StemSeparator.chunks(frames: 0).isEmpty, "nothing, no chunks")
+    check(StemSeparator.chunks(frames: 343_981).map(\.length) == [343_980, 85_996], "one frame over a segment")
+    check(StemSeparator.weight(0) == 1 / 171_990 && StemSeparator.weight(343_979) == 1 / 171_990, "the ends")
+    check(StemSeparator.weight(171_989) == 1 && StemSeparator.weight(171_990) == 1, "the middle")
+    check(StemSeparator.weight(1000) == 1001 / 171_990, "rising")
+    var covered = [Float](repeating: 0, count: 882_000)
+    for chunk in chunks {
+        for i in 0..<chunk.length { covered[chunk.offset + i] += StemSeparator.weight(i) }
+    }
+    check(covered.allSatisfy { $0 > 0 }, "every frame is weighted")
+}
+
+section("stems: a whole song as demucs's apply_model separates it") {
+    // The 20 s test signal through apply_model(shifts=0, overlap=0.25) in
+    // PyTorch, from Tools/demucs-reference.json: each stem's RMS over both
+    // channels in quarter-second windows - drums, bass, vocals.
+    let reference: [[Double]] = [
+        [0.07629027649554675, 0.0010683445449905875, 0.07922032918546197, 0.001073291738598022, 0.0757701250390175, 0.0017255601966129784, 0.07915466229232589, 0.0011576788626247757, 0.07562782661106388, 0.0015684764181624386, 0.07925516529153763, 0.0010466642602496405, 0.07564797595013195, 0.0010442207633023439, 0.07992768821558309, 0.0011021243943826738, 0.07606942140223232, 0.0011002788036247634, 0.0795004496816914, 0.0010752735846412706, 0.07565470262447346, 0.0016679176927965333, 0.07922506498681993, 0.001253346468128292, 0.07574835746159286, 0.0013995971039787154, 0.07853522666660703, 0.0010931907017792473, 0.07577864908735255, 0.0011671688717009169, 0.07854665215986445, 0.00101546213454962, 0.07580758070442664, 0.001105044985774051, 0.07967524697431257, 0.0011245776652474297, 0.07566924598625865, 0.0012496642956812535, 0.07911320397732567, 0.0012564784186404096, 0.07555547948691212, 0.0013612307280883784, 0.07862161252686176, 0.0010599029907664623, 0.07588392470753234, 0.0011725827586711003, 0.07936768059710579, 0.0009589958999506766, 0.07576180712434116, 0.001179392046212075, 0.07975696057979648, 0.0009325057150836828, 0.07573479480380073, 0.001263195791449792, 0.07918510105529596, 0.00098399016799501, 0.0756991891848237, 0.0014061898146766124, 0.0792587707482011, 0.0009448911664736594, 0.07549428962455211, 0.001236245622736261, 0.07907843033368733, 0.0009269882271229611, 0.07590194975187883, 0.0009920004537823305, 0.07877138716330087, 0.0009726686619519458, 0.07581143811911951, 0.001445046608580239, 0.07920262125775761, 0.0010921877961904303, 0.07565880290378771, 0.0016649015040211804, 0.07979370969694817, 0.001198397717553114, 0.07548833705861953, 0.0011857067857954015, 0.08001087573392941, 0.0007455687012478785],
+        [0.08251042522717925, 0.0783210216304029, 0.0825539333355488, 0.07868027395239836, 0.08408645377482765, 0.07896457051930712, 0.08354900751763351, 0.07926120644916643, 0.08474888046867214, 0.07903416038587817, 0.08331514105430939, 0.07882963549965444, 0.08377048899506638, 0.07840871310523376, 0.08204345603027903, 0.0782897894551598, 0.0815099097476461, 0.07831615450751392, 0.08267223519415522, 0.07866777813935082, 0.0840524937315196, 0.07904811379820441, 0.08350098388818566, 0.07937652105355433, 0.08482400530566389, 0.07936054535647545, 0.08356223233045879, 0.07917995208696699, 0.08341461476854757, 0.07848840197611122, 0.0816036572367623, 0.07830216188198182, 0.08118501820078483, 0.07834723044154997, 0.08209916581867392, 0.07893053507448673, 0.08432710448245617, 0.07938836846555448, 0.08347073630825672, 0.07991259990847477, 0.08458363413896476, 0.07955794179764335, 0.08362256894779015, 0.07918972275705138, 0.08343745222969087, 0.07849769131162923, 0.08075141852599446, 0.0782745063554963, 0.08091113355824836, 0.07833560445321779, 0.08198305714126823, 0.0786712055419182, 0.0837077779086431, 0.07880690629285199, 0.08313123239384886, 0.078891607516737, 0.08425699860918716, 0.0787762722091849, 0.08362303000141258, 0.07861943326184992, 0.08345527819050078, 0.0783398384752851, 0.08178918121729686, 0.07826561561353874, 0.08142980893180446, 0.07829663515510422, 0.08244831874880612, 0.0784968563810587, 0.08357961236874795, 0.07877259255068113, 0.08302181748621788, 0.07935652819054038, 0.08485164031262356, 0.07984374756451637, 0.08394909106649692, 0.07977555573875685, 0.08457247253438824, 0.07850959533132375, 0.08237875664948952, 0.07809062158087916],
+        [0.0008229205598088827, 0.0008105494330024419, 0.0008074783472806416, 0.0008206789711117451, 0.0008181168515536724, 0.0008219766176139295, 0.0008192280339389363, 0.0008297170732152124, 0.0008256644518157514, 0.0008206022438662801, 0.0008154446585376924, 0.0008208679426551305, 0.0008166005752656354, 0.000812531145691137, 0.0008076974799735734, 0.0008120905999736731, 0.0008098580564407731, 0.000810549306975053, 0.0008084894406218354, 0.0008204474251239287, 0.0008202081541998549, 0.0008222812950650734, 0.000818780373164044, 0.0008308111071994916, 0.0008244112022316255, 0.000816744394499156, 0.000805421816489941, 0.000811030413311989, 0.0008002344336465267, 0.0007954186269978588, 0.0007851187623648294, 0.0007863620324203416, 0.0007828145411534746, 0.0007870656315238307, 0.0007842051432652066, 0.0007964992817114607, 0.000794386248620676, 0.0007984901633738839, 0.0007949356559242179, 0.0008073423351011278, 0.0008048254813650609, 0.0008014929402529698, 0.0007944309302475004, 0.0008003895164712699, 0.0007928707393141627, 0.000789658278136446, 0.0007810758884945845, 0.0007860855283589699, 0.0007812247822340642, 0.0007804362143143797, 0.000775267802844212, 0.0007857418304483944, 0.0007806905405438778, 0.0007798807739189597, 0.0007745824963494016, 0.0007858613694472482, 0.0007838802591008631, 0.0007820057185684245, 0.0007768947692091189, 0.0007811000590990973, 0.0007768907893320645, 0.0007703619291850454, 0.0007662876140376914, 0.0007704317033248651, 0.0007685690853997704, 0.0007679276928213961, 0.0007668897327401976, 0.0007780611784714072, 0.000778756973700296, 0.0007802795289098319, 0.0007783805590744544, 0.0007961666516743018, 0.000801043137413405, 0.0008035078031642635, 0.0007993557355835348, 0.0008131341682981552, 0.0008063685132288553, 0.0008109646778193231, 0.0008024447125048647, 0.0008033519903775547]
+    ]
+    guard let model = demucsModel() else { return }
+    let planar = demucsTestSignal(seconds: 20)
+    let n = planar.count / 2
+    var interleaved = [Float](repeating: 0, count: 2 * n)
+    for i in 0..<n {
+        interleaved[2 * i] = planar[i]
+        interleaved[2 * i + 1] = planar[n + i]
+    }
+    let mix = AudioFrames(interleaved: interleaved)
+    var stems = [[Float]](repeating: [], count: 3)
+    var order: [Int] = []
+    var fractions: [Double] = []
+    let started = Date()
+    do {
+        try StemSeparator.separate(mix, model: model, progress: { fractions.append($0) }) { stem, left, right, count in
+            order.append(stem)
+            stems[stem].append(contentsOf: UnsafeBufferPointer(start: left, count: count))
+            stems[stem].append(contentsOf: UnsafeBufferPointer(start: right, count: count))
+        }
+    } catch {
+        check(false, "separation failed: \(error)")
+        return
+    }
+    print(String(format: "     20 s separated in %.2f s", Date().timeIntervalSince(started)))
+    check(order == [0, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2], "a block of each stem per chunk, in order: \(order)")
+    check(fractions == [0.25, 0.5, 0.75, 1], "progress \(fractions)")
+    check(stems.allSatisfy { $0.count == 2 * n }, "every stem as long as the song")
+    // The blocks come left then right; put them back per channel.
+    var worst = 0.0
+    for s in 0..<3 {
+        var left: [Float] = [], right: [Float] = []
+        var at = 0
+        for chunk in StemSeparator.chunks(frames: n) {
+            let done = chunk.offset + StemSeparator.stride < n ? StemSeparator.stride : n - chunk.offset
+            left += stems[s][at..<(at + done)]
+            right += stems[s][(at + done)..<(at + 2 * done)]
+            at += 2 * done
+        }
+        let window = 11_025
+        for k in 0..<reference[s].count {
+            var squares = 0.0
+            for i in (k * window)..<((k + 1) * window) { squares += Double(left[i]) * Double(left[i]) + Double(right[i]) * Double(right[i]) }
+            let rms = (squares / Double(2 * window)).squareRoot()
+            worst = max(worst, abs(rms - reference[s][k]) / (reference[s][k] + 1e-3))
+            check(abs(rms - reference[s][k]) <= 0.01 * reference[s][k] + 2e-4,
+                  "stem \(s) window \(k): RMS \(rms), PyTorch \(reference[s][k])")
+        }
+    }
+    print(String(format: "     worst window off by %.3f %%", worst * 100))
+
+    // Cancelled, it stops between segments.
+    let semaphore = DispatchSemaphore(value: 0)
+    nonisolated(unsafe) var cancelled = false
+    let task = Task.detached {
+        do {
+            try StemSeparator.separate(mix, model: model) { _, _, _, _ in }
+        } catch is CancellationError {
+            cancelled = true
+        } catch {}
+        semaphore.signal()
+    }
+    task.cancel()
+    semaphore.wait()
+    check(cancelled, "a cancelled separation throws CancellationError")
+}
+
+section("stems: written as Apple Lossless and read back") {
+    let folder = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("ultramix-stems-\(UUID().uuidString)")
+    try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: folder) }
+    // Up to 1.5: above full scale, which the half level stored keeps.
+    let planar = demucsTestSignal(seconds: 3).map { $0 * 1.5 }
+    let n = planar.count / 2
+    let track = UUID()
+    let destination = folder.appendingPathComponent(StemFiles.storedName(track, .vocals))
+    check(destination.lastPathComponent == "\(track.uuidString).ht1.vocals.caf", destination.lastPathComponent)
+    do {
+        let writer = try StemWriter(to: destination)
+        var at = 0
+        for size in [1, 4095, 50_000, 7] + [Int](repeating: 20_000, count: 10) {
+            let count = min(size, n - at)
+            planar.withUnsafeBufferPointer { p in try? writer.write(left: p.baseAddress! + at, right: p.baseAddress! + n + at, count: count) }
+            at += count
+        }
+        planar.withUnsafeBufferPointer { p in try? writer.write(left: p.baseAddress! + at, right: p.baseAddress! + n + at, count: n - at) }
+        try writer.finish()
+        let names = try FileManager.default.contentsOfDirectory(atPath: folder.path)
+        check(names == [destination.lastPathComponent], "only the stem is left: \(names)")
+        let cached = folder.appendingPathComponent(StemFiles.cachedName(track, .vocals))
+        let frames = try AudioCache.decode(destination, to: cached)
+        let read = try AudioFrames(mapping: cached)
+        check(frames == n && read.frameCount == n, "\(read.frameCount) frames back, \(n) written")
+        var worst: Float = 0
+        for i in 0..<min(n, read.frameCount) {
+            for c in 0..<2 { worst = max(worst, abs(read.samples[2 * i + c] / Stem.storedScale - planar[c * n + i])) }
+        }
+        // Half a 16-bit step at half level is one step at full level.
+        check(worst <= 1.0001 / 32_768, "worst error \(worst * 32_768) steps")
+    } catch {
+        check(false, "writing or reading back failed: \(error)")
+    }
+
+    // Cancelled, or dropped unfinished: no file at all.
+    let other = folder.appendingPathComponent(StemFiles.storedName(track, .drums))
+    do {
+        let writer = try StemWriter(to: other)
+        planar.withUnsafeBufferPointer { p in try? writer.write(left: p.baseAddress!, right: p.baseAddress! + n, count: 1000) }
+        writer.cancel()
+        do {
+            let dropped = try StemWriter(to: other)
+            planar.withUnsafeBufferPointer { p in try? dropped.write(left: p.baseAddress!, right: p.baseAddress! + n, count: 1000) }
+        }
+    } catch {
+        check(false, "\(error)")
+    }
+    let left = (try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []
+    check(!left.contains { $0.contains(".partial") } && !left.contains(other.lastPathComponent), "nothing left behind: \(left)")
+}
+
+extension StemAudio {
+    /// A copy one frame short: stems that no longer line up with the song.
+    func shortened() -> StemAudio {
+        func cut(_ a: AudioFrames) -> AudioFrames {
+            AudioFrames(interleaved: Array(UnsafeBufferPointer(start: a.samples, count: 2 * (a.frameCount - 1))))
+        }
+        return StemAudio(drums: cut(drums), bass: cut(bass), vocals: cut(vocals))
+    }
+}
+
+section("stems: the stretcher plays the levels, and splices where the song does") {
+    // Three made-up stored stems for the engine fixture: anything will do,
+    // the arithmetic is linear. Stored at half level, as the separator
+    // writes them.
+    let n = engineTrack.frameCount
+    func noise(_ seed: UInt64, _ level: Float) -> AudioFrames {
+        var generator = SplitMix(seed: seed)
+        return AudioFrames(interleaved: (0..<2 * n).map { _ in generator.uniform(-level, level) })
+    }
+    let parts = StemAudio(drums: noise(41, 0.2), bass: noise(42, 0.1), vocals: noise(43, 0.15))
+    let track = UUID()
+    let grid = SourceGrid(bpm: 124.5, firstBeatSeconds: 0.731, durationSeconds: engineTrack.duration)
+    let lookup: GridLookup = { $0 == track ? grid : nil }
+    var asked: [PitchShift] = []
+    func plan(playBPM: Double? = nil, available: Bool = true, short: Bool = false,
+              _ configure: (inout Clip) -> Void) -> RenderPlan {
+        var doc = MixDocument()
+        let id = try! doc.addClip(trackID: track, grid: grid, lane: 0, startBeat: 0, grids: lookup)
+        if let playBPM {
+            doc.projectBPM = playBPM
+            doc.setTargetBPM(id, playBPM)
+        }
+        configure(&doc.clips[0])
+        return RenderPlan(document: doc, grids: lookup, audio: { $0 == track ? engineTrack : nil }, generation: 0,
+                          stemAudio: { id, pitch in
+                              asked.append(pitch)
+                              guard id == track, available else { return nil }
+                              return short ? StemAudio(drums: noise(1, 0.1), bass: parts.bass, vocals: parts.vocals).shortened() : parts
+                          })
+    }
+    func render(_ plan: RenderPlan, from: Int, count: Int, memo: Bool = true) -> [Float] {
+        let stretcher = Stretcher()
+        stretcher.usesMemo = memo
+        var left = [Float](repeating: 0, count: count), right = left
+        var state = StretchMemo()
+        var done = 0
+        while done < count {
+            let block = min(333, count - done)
+            left.withUnsafeMutableBufferPointer { l in
+                right.withUnsafeMutableBufferPointer { r in
+                    stretcher.render(plan.segments[0], tempo: plan.tempo, from: from + done, count: block,
+                                     left: l.baseAddress! + done, right: r.baseAddress! + done, memo: &state)
+                }
+            }
+            done += block
+        }
+        return left + right
+    }
+
+    // What the plan makes of the levels.
+    check(plan { _ in }.segments[0].stems == nil && asked.isEmpty, "unity: no stems, none asked for")
+    let alike = plan { $0.parts = { var s = ClipParts(); for stem in Stem.allCases { s[stem].gainDB = -6 }; return s }() }
+    check(alike.segments[0].stems == nil && alike.segments[0].gain == Float(Automation.gain(dB: -6)),
+          "all at −6 dB is the clip at −6 dB: \(alike.segments[0].gain)")
+    let mutedAll = plan { $0.parts = { var s = ClipParts(); for stem in Stem.allCases { s[stem].muted = true }; return s }() }
+    check(mutedAll.segments[0].stems == nil && mutedAll.segments[0].gain == 0, "all muted is silence")
+    func noVocals(_ clip: inout Clip) { clip.parts.vocals.muted = true }
+    let mix = plan(noVocals).segments[0].stems
+    check(mix != nil && mix?.k0 == 1 && mix?.k1 == 0 && mix?.k2 == 0 && mix?.k3 == -2,
+          "vocals muted: the song, less twice the half-level vocals: \(String(describing: mix.map { [$0.k0, $0.k1, $0.k2, $0.k3] }))")
+    check(plan(available: false, noVocals).segments[0].stems == nil, "stems not there yet: the whole song")
+    check(plan(short: true, noVocals).segments[0].stems == nil, "stems that do not match the song's length are not played")
+    asked = []
+    _ = plan { noVocals(&$0); $0.keyShift = 2 }
+    check(asked == [.none], "a shift not yet rendered asks for the unshifted stems too: \(asked)")
+
+    // At the source's own tempo the grains are contiguous: the output is
+    // the stem arithmetic, sample for sample.
+    let level = Float(Automation.gain(dB: -6))
+    let span = 44_100 * 6, at = 44_100 * 3
+    let straightPlan = plan(noVocals)
+    let straight = render(straightPlan, from: at, count: span)
+    var worst: Float = 0
+    for c in 0..<2 {
+        for i in 0..<span {
+            let source = Int(straightPlan.segments[0].nominalSourceFrame(atTimelineFrame: at + i, tempo: straightPlan.tempo).rounded())
+            let s = 2 * source + c
+            worst = max(worst, abs(straight[c * span + i] - (engineTrack.samples[s] - 2 * parts.vocals.samples[s])))
+        }
+    }
+    check(worst < 1e-6, "ratio 1, vocals muted: song − vocals, worst \(worst)")
+
+    // Played at 127: the output is linear in the levels, which only holds
+    // if the grains start in the same places whatever the levels are.
+    let full = render(plan(playBPM: 127) { _ in }, from: at, count: span)
+    let muted = render(plan(playBPM: 127, noVocals), from: at, count: span)
+    let quieter = render(plan(playBPM: 127) { $0.parts.vocals.gainDB = -6 }, from: at, count: span)
+    var linear: Float = 0, moved: Float = 0
+    for i in 0..<(2 * span) {
+        linear = max(linear, abs((quieter[i] - full[i]) - (1 - level) * (muted[i] - full[i])))
+        moved = max(moved, abs(muted[i] - full[i]))
+    }
+    check(moved > 0.05, "muting the vocals changes the output: \(moved)")
+    check(linear < 1e-5, "levels change only the mix, not the splices: worst \(linear)")
+    check(render(plan(playBPM: 127, noVocals), from: at, count: span, memo: false) == muted, "the memo changes nothing")
+
+    // The same, and bit for bit, with the clip gain folded in.
+    let gained = render(plan(playBPM: 127) { noVocals(&$0); $0.gainDB = -3 }, from: at, count: span)
+    let gain = Float(Automation.gain(dB: -3))
+    check(zip(gained, muted).allSatisfy { $0 == $1 * gain }, "the clip gain scales the stem mix exactly")
+
+    // The read-ahead touches the stems where it touches the song.
+    let spans = ReadAhead.spans(plan(playBPM: 127, noVocals), from: at, count: 4096)
+    check(spans.count == 4 && Set(spans.map(\.frames)).count == 1, "the song and its three stems, the same frames: \(spans.count)")
+}
+
+section("stems: their cache names, at every pitch, and when a clip needs them") {
+    let track = UUID()
+    let up = PitchShift(semitones: 2, cents: -15)
+    check(StemFiles.cachedName(track, .bass) == "\(track.uuidString).ht1.bass.f32", "decoded")
+    check(StemFiles.cachedName(track, .bass, pitch: up) == "\(track.uuidString).ht1.bass.k+2c-15.sw1.f32", "shifted")
+    check(StemFiles.cachedName(track, .vocals, pitch: PitchShift(semitones: -3, cents: 0)).hasSuffix(".ht1.vocals.k-3.sw1.f32"),
+          "whole semitones named as the song's shifts are")
+    for pitch in [PitchShift.none, up, PitchShift(semitones: 0, cents: 25)] {
+        for stem in Stem.stored {
+            let parsed = CacheSweep.stem(in: StemFiles.cachedName(track, stem, pitch: pitch))
+            check(parsed.map { $0.id == track && $0.stem == stem && $0.pitch == pitch } == true, "\(stem.name) at \(pitch) parsed back")
+        }
+    }
+    check(CacheSweep.stem(in: "\(track.uuidString).ht0.drums.f32")?.id == track, "an older separator's still belongs to its track")
+    check(CacheSweep.stem(in: "\(track.uuidString).ht1.other.f32") == nil, "other is never stored")
+    check(CacheSweep.stem(in: "\(track.uuidString).f32") == nil && CacheSweep.stem(in: "\(track.uuidString).k+2.sw1.f32") == nil,
+          "the song and its shifts are not stems")
+    check(CacheSweep.stem(in: "\(track.uuidString).ht1.drums.k+2.ss1.f32") == nil, "another shift tag is not ours")
+    check(CacheSweep.shift(in: StemFiles.cachedName(track, .drums, pitch: up)) == nil, "a shifted stem is not the song's shift")
+    let gone = UUID()
+    let names = [StemFiles.cachedName(track, .drums, pitch: up), StemFiles.cachedName(gone, .bass, pitch: up)]
+    check(CacheSweep.orphans(among: names, keeping: [track]) == [names[1]], "a removed track's shifted stems go")
+
+    var levels = ClipParts()
+    check(!levels.playsStems, "unity: no stems")
+    for stem in Stem.allCases { levels[stem].gainDB = -4 }
+    check(!levels.playsStems, "all alike: no stems")
+    for stem in Stem.allCases { levels[stem].muted = true }
+    check(!levels.playsStems, "all muted: no stems")
+    levels = ClipParts()
+    levels.other.gainDB = -1
+    check(levels.playsStems, "one apart: stems")
+    levels = ClipParts()
+    levels.vocals.muted = true
+    check(levels.playsStems, "vocals muted: stems")
+    levels = ClipParts()
+    levels.drums.automation.volume = [AutomationNode(beat: 0, value: -4)]
+    check(levels.playsStems && !levels.isNeutral, "a stem with automation: stems, even at its rest")
+}
+
+section("stems: a stem's own automation plays on its own bus, and the stems still add up") {
+    let n = engineTrack.frameCount
+    func noise(_ seed: UInt64, _ level: Float) -> AudioFrames {
+        var generator = SplitMix(seed: seed)
+        return AudioFrames(interleaved: (0..<2 * n).map { _ in generator.uniform(-level, level) })
+    }
+    let parts = StemAudio(drums: noise(51, 0.2), bass: noise(52, 0.1), vocals: noise(53, 0.15))
+    let track = UUID()
+    let grid = SourceGrid(bpm: 124.5, firstBeatSeconds: 0.731, durationSeconds: engineTrack.duration)
+    let lookup: GridLookup = { $0 == track ? grid : nil }
+    // At −12 dB the safety limiter never touches a render: what is compared
+    // is the stem arithmetic alone.
+    func plan(playBPM: Double? = nil, _ configure: (inout MixDocument, UUID) -> Void) -> RenderPlan {
+        var doc = MixDocument()
+        let id = try! doc.addClip(trackID: track, grid: grid, lane: 1, startBeat: 0, grids: lookup)
+        if let playBPM {
+            doc.projectBPM = playBPM
+            doc.setTargetBPM(id, playBPM)
+        }
+        doc.setGain(id, -12)
+        configure(&doc, id)
+        return RenderPlan(document: doc, grids: lookup, audio: { $0 == track ? engineTrack : nil }, generation: 0,
+                          stemAudio: { id, _ in id == track ? parts : nil })
+    }
+    let rest = AutomationKind.volume.restValue
+    func flat(_ kind: AutomationKind, _ value: Double) -> [AutomationNode] { [AutomationNode(beat: 0, value: value)] }
+    let at = 44_100 * 3, span = 44_100 * 6
+    func near(_ a: [Float], _ b: [Float]) -> Float { zip(a, b).map { abs($0 - $1) }.max() ?? .infinity }
+
+    // The plan: a stem with automation is a segment of its own on its bus.
+    let atRest = plan(playBPM: 127) { doc, _ in doc.clips[0].parts.vocals.automation.volume = flat(.volume, rest) }
+    let voices = atRest.segments.filter { $0.clipID == atRest.segments[0].clipID }
+    check(voices.count == 2 && voices.map(\.part) == [nil, .vocals], "the clip's segment and the vocals': \(voices.map(\.part))")
+    check(voices[0].stems.map { [$0.k0, $0.k1, $0.k2, $0.k3] } == [1, 0, 0, -2], "the clip's plays the song less the vocals")
+    check(voices[1].stems.map { [$0.k0, $0.k1, $0.k2, $0.k3] } == [0, 0, 0, 2], "the vocals' plays the vocals alone")
+    check(atRest.partBuses == 1 << (1 * 4 + Stem.vocals.rawValue), "one bus: lane B's vocals")
+    check(atRest.partLanes[1][Stem.vocals.rawValue].volumeReference == Automation.gain(dB: rest) && atRest.lanes[1].volumeReference == 1,
+          "a stem's curve is a change on its rest, the lane's its level")
+
+    // At rest a stem's bus passes it on: the stems add up to the song.
+    let full = renderMix(plan(playBPM: 127) { _, _ in }, from: at, count: span)
+    let restRender = renderMix(atRest, from: at, count: span)
+    check(near(full, restRender) < 1e-5, "a stem row at rest is the song: worst \(near(full, restRender))")
+
+    // A level on the stem's curve is the stem's level: −10 on a −4 rest is
+    // the vocals at −6 dB, in the same splices.
+    let curved = renderMix(plan(playBPM: 127) { doc, _ in doc.clips[0].parts.vocals.automation.volume = flat(.volume, rest - 6) },
+                           from: at, count: span)
+    let levelled = renderMix(plan(playBPM: 127) { doc, id in doc.setPartGain(id, .vocals, -6) }, from: at, count: span)
+    check(near(curved, levelled) < 1e-5, "a curve 6 dB under rest is the stem at −6 dB: worst \(near(curved, levelled))")
+    let silent = renderMix(plan(playBPM: 127) { doc, _ in doc.clips[0].parts.vocals.automation.volume = flat(.volume, Automation.silenceDB) },
+                           from: at, count: span)
+    let muted = renderMix(plan(playBPM: 127) { doc, id in doc.setPartMuted(id, .vocals, true) }, from: at, count: span)
+    check(near(silent, muted) < 1e-5 && near(silent, full) > 0.01, "a curve at silence is the stem muted: worst \(near(silent, muted))")
+
+    // Pan on the drums' row moves the drums alone: hard left, the right
+    // channel is the mix without drums, the left the whole mix.
+    let panned = renderMix(plan(playBPM: 127) { doc, _ in doc.clips[0].parts.drums.automation.pan = flat(.pan, -1) }, from: at, count: span)
+    let noDrums = renderMix(plan(playBPM: 127) { doc, id in doc.setPartMuted(id, .drums, true) }, from: at, count: span)
+    check(near(Array(panned[..<span]), Array(full[..<span])) < 1e-5, "left: the whole mix")
+    check(near(Array(panned[span...]), Array(noDrums[span...])) < 1e-5, "right: the mix without the drums")
+
+    // A low-pass on the bass row is on the bass's bus, and heard.
+    let filtered = plan(playBPM: 127) { doc, _ in doc.clips[0].parts.bass.automation.lowPass = flat(.lowPass, 0.2) }
+    check(filtered.partBuses == 1 << (1 * 4 + Stem.bass.rawValue), "the bass's bus")
+    let lowPassed = renderMix(filtered, from: at, count: span)
+    check(near(lowPassed, full) > 1e-3, "the bass's filter is heard")
+
+    // The bus's filter and curves are on the control grid: any block size,
+    // memo or not, the same bits.
+    let mixed = plan(playBPM: 127) { doc, id in
+        doc.clips[0].parts.bass.automation.lowPass = [AutomationNode(beat: 4, value: 1), AutomationNode(beat: 24, value: 0.3)]
+        doc.clips[0].parts.vocals.automation.volume = [AutomationNode(beat: 8, value: rest), AutomationNode(beat: 20, value: -30)]
+        doc.setPartGain(id, .drums, -3)
+    }
+    let reference = renderMix(mixed, from: at, count: span, blocks: 512)
+    check(renderMix(mixed, from: at, count: span, blocks: 333) == reference
+          && renderMix(mixed, from: at, count: span, blocks: 4096) == reference, "the same at any block size")
+    let renderer = MixRenderer()
+    renderer.usesStretchMemo = false
+    var left = [Float](repeating: 0, count: span), right = left
+    left.withUnsafeMutableBufferPointer { l in
+        right.withUnsafeMutableBufferPointer { r in
+            renderer.render(plan: mixed, laneMask: 0b111, from: at, count: span, left: l.baseAddress!, right: r.baseAddress!)
+        }
+    }
+    check(left + right == reference, "and without the memo")
+
+    // A muted lane silences its stem buses too.
+    let rendered = MixRenderer()
+    var quiet = [Float](repeating: 1, count: 4096), quietRight = quiet
+    quiet.withUnsafeMutableBufferPointer { l in
+        quietRight.withUnsafeMutableBufferPointer { r in
+            rendered.render(plan: mixed, laneMask: 0b101, from: at, count: 4096, left: l.baseAddress!, right: r.baseAddress!)
+        }
+    }
+    check(quiet.allSatisfy { $0 == 0 } && quietRight.allSatisfy { $0 == 0 }, "lane B off: its stems are silent")
+}
+
+section("stems: their waveforms, to the song's scale, and their cache names") {
+    // A song of known parts: drums 0.2, bass 0.1, vocals 0.3 (true level,
+    // stored at half), and other 0.4 - the song is the sum, peaking at 1.
+    let n = 44_100
+    func constant(_ value: Float) -> AudioFrames { AudioFrames(interleaved: [Float](repeating: value, count: 2 * n)) }
+    let song = constant(1.0)
+    let parts = StemAudio(drums: constant(0.1), bass: constant(0.05), vocals: constant(0.15))
+    let waves = Waveform.stems(song: song, parts)
+    check(waves.count == 4, "one per stem")
+    let expected: [Float] = [0.2, 0.1, 0.3, 0.4]
+    for (stem, wave) in zip(Stem.allCases, waves) {
+        let level = wave.levels[0]
+        check(abs(level.maxL.max()! - expected[stem.rawValue]) < 1e-6 && abs(level.rmsR.max()! - expected[stem.rawValue]) < 1e-6,
+              "\(stem.name) drawn at its share of the song: \(level.maxL.max()!)")
+        check(wave.framesPerBucket == Waveform(audio: song).framesPerBucket, "\(stem.name): the song's buckets")
+    }
+    check(Waveform(data: waves[3].data())?.levels[0] == waves[3].levels[0], "a stem's waveform survives its file")
+
+    let track = UUID()
+    check(StemFiles.waveformName(track, .other) == "\(track.uuidString).ht1.other.wave", "named for its track and stem")
+    let parsed = CacheSweep.stem(in: StemFiles.waveformName(track, .other))
+    check(parsed.map { $0.id == track && $0.stem == .other && $0.pitch == .none } == true, "other's waveform is the track's too")
+    check(CacheSweep.stem(in: "\(track.uuidString).wave") == nil, "the song's own waveform is not a stem's")
+    check(CacheSweep.orphans(among: [StemFiles.waveformName(UUID(), .bass)], keeping: [track]).count == 1,
+          "a removed track's stem waveforms go")
 }
 
 // MARK: - Summary

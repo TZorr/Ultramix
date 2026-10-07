@@ -36,6 +36,12 @@ nonisolated final class MixRenderer {
     private let laneLeft: [UnsafeMutablePointer<Float>]
     private let laneRight: [UnsafeMutablePointer<Float>]
     private var lanes: [LaneState]
+    /// A bus per lane and stem, `lane * 4 + stem`: stems with automation of
+    /// their own, through their own curves, then into their lane.
+    private let partLeft: [UnsafeMutablePointer<Float>]
+    private let partRight: [UnsafeMutablePointer<Float>]
+    private var parts: [LaneState]
+    private static let partCount = Clip.laneCount * Stem.allCases.count
 
     private var limiterGain: Float = 1
     private let attack: Float
@@ -70,6 +76,9 @@ nonisolated final class MixRenderer {
         laneLeft = (0..<Clip.laneCount).map { _ in .allocate(capacity: Self.maxBlock) }
         laneRight = (0..<Clip.laneCount).map { _ in .allocate(capacity: Self.maxBlock) }
         lanes = (0..<Clip.laneCount).map { _ in LaneState() }
+        partLeft = (0..<Self.partCount).map { _ in .allocate(capacity: Self.maxBlock) }
+        partRight = (0..<Self.partCount).map { _ in .allocate(capacity: Self.maxBlock) }
+        parts = (0..<Self.partCount).map { _ in LaneState() }
         let rate = Float(AudioFrames.sampleRate)
         attack = 1 - exp(-1 / (0.002 * rate))
         release = 1 - exp(-1 / (0.120 * rate))
@@ -78,6 +87,8 @@ nonisolated final class MixRenderer {
     deinit {
         laneLeft.forEach { $0.deallocate() }
         laneRight.forEach { $0.deallocate() }
+        partLeft.forEach { $0.deallocate() }
+        partRight.forEach { $0.deallocate() }
     }
 
     /// Forget filter and limiter history - after a seek, before a bounce.
@@ -91,6 +102,7 @@ nonisolated final class MixRenderer {
 
     func reset() {
         for i in lanes.indices { lanes[i] = LaneState() }
+        for i in parts.indices { parts[i] = LaneState() }
         limiterGain = 1
         meterLeft = 0
         meterRight = 0
@@ -121,13 +133,28 @@ nonisolated final class MixRenderer {
             laneLeft[lane].update(repeating: 0, count: count)
             laneRight[lane].update(repeating: 0, count: count)
         }
+        let stems = Stem.allCases.count
+        for bus in 0..<Self.partCount where plan.partBuses & (1 << bus) != 0 {
+            partLeft[bus].update(repeating: 0, count: count)
+            partRight[bus].update(repeating: 0, count: count)
+        }
         for index in plan.segments.indices {
             let segment = plan.segments[index]
             guard laneMask & (1 << segment.lane) != 0,
                   segment.endFrame > from, segment.startFrame < from + count else { continue }
+            let bus = segment.part.map { segment.lane * stems + $0.rawValue }
             stretcher.render(segment, tempo: plan.tempo, from: from, count: count,
-                             left: laneLeft[segment.lane], right: laneRight[segment.lane],
+                             left: bus.map { partLeft[$0] } ?? laneLeft[segment.lane],
+                             right: bus.map { partRight[$0] } ?? laneRight[segment.lane],
                              memo: &plan.memos[index])
+        }
+        // Every bus the plan has, on every block, sounding or not: its
+        // filters then run the same whatever the block size.
+        for bus in 0..<Self.partCount where plan.partBuses & (1 << bus) != 0 && laneMask & (1 << (bus / stems)) != 0 {
+            let lane = bus / stems
+            parts[bus].process(plan: plan.partLanes[lane][bus % stems], tempo: plan.tempo, from: from, count: count,
+                               left: partLeft[bus], right: partRight[bus],
+                               outLeft: laneLeft[lane], outRight: laneRight[lane])
         }
         left.update(repeating: 0, count: count)
         right.update(repeating: 0, count: count)
@@ -211,7 +238,7 @@ nonisolated private struct LaneState {
 
     static func control(at frame: Int, plan: LanePlan, tempo: TempoMap) -> Control {
         let beat = tempo.beat(atSeconds: Double(frame) / AudioFrames.sampleRate)
-        let gain = Automation.gain(dB: plan.volume.value(at: beat))
+        let gain = Automation.gain(dB: plan.volume.value(at: beat)) / plan.volumeReference
         // Balance for a stereo source: the centre is unity on both sides,
         // and turning away from a side lowers that side only, on an
         // equal-power curve.

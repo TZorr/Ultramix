@@ -5,7 +5,7 @@
 //  The strip under the timeline, in two rows: on top the selected clip - which
 //  track, where it sits, its beatgrid, its lock - how dragging moves clips,
 //  and the mix's length; below, its tempo target, gain, key and fine tune,
-//  loop, mute and
+//  stems, loop, mute and
 //  transition, and a warning when its tempo leaves what the stretcher can do.
 //  With nothing selected, the handful of keys worth knowing.
 //
@@ -97,10 +97,11 @@ struct ClipBar: View {
                     .overlay(alignment: .leading) {
                         HStack(spacing: 12) {
                             Circle().fill(LaneStyle.color(clip.lane, session.document.lanes)).frame(width: 9, height: 9)
-                            Text(track.displayName)
+                            Text(session.selectedPart.map { "\(track.displayName) — \($0.name.capitalized)" } ?? track.displayName)
                                 .fontWeight(.medium)
                                 .lineLimit(1)
-                                .help(track.displayName)
+                                .help(session.selectedPart.map { "The \($0.name) of \(track.displayName): gain and mute work on this stem" }
+                                      ?? track.displayName)
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                     }
@@ -184,38 +185,49 @@ struct ClipBar: View {
         }
     }
 
-    /// Under "Bar one": level, key, loop and mute, transition.
+    /// Under "Bar one": level, key, loop and mute, transition. With a stem
+    /// row picked in an expanded lane, the gain and mute are that stem's.
     @ViewBuilder
     private func controls(_ clip: Clip, _ track: Track) -> some View {
-        Text("Gain").foregroundStyle(.secondary)
-        Button { session.perform { $0.stepGain(clip.id, by: -1) } } label: {
+        let part = session.selectedPart
+        let gainDB = part.map { clip.parts[$0].gainDB } ?? clip.gainDB
+        let whose = part.map { "The \($0.name)'s" } ?? "Clip"
+        Text(part.map { "\($0.name.capitalized) gain" } ?? "Gain").foregroundStyle(.secondary)
+        Button { stepGain(clip, part, by: -1) } label: {
             stepIcon("minus")
         }
-        .disabled(clip.gainDB.rounded() <= Clip.gainRange.lowerBound)
-        .help("Clip gain 1 dB quieter")
+        .disabled(gainDB.rounded() <= Clip.gainRange.lowerBound)
+        .help("\(whose) gain 1 dB quieter")
         .accessibilityLabel("Gain down")
         // A fixed width, so the buttons stay put between "-9 dB" and "-10 dB".
-        Text(Self.gainLabel(clip.gainDB))
+        Text(Self.gainLabel(gainDB))
             .monospacedDigit()
             .frame(width: 46)
-            .help(target.map { "Offset from the \(String(format: "%.1f", $0)) LUFS target, −24 to +12 dB in all; 0 dB plays the clip at the target" }
+            .help(part != nil ? "The stem's level change, −24 to +12 dB, before the clip's gain; 0 dB plays it as it is"
+                  : target.map { "Offset from the \(String(format: "%.1f", $0)) LUFS target, −24 to +12 dB in all; 0 dB plays the clip at the target" }
                   ?? "The clip's level change, −24 to +12 dB; 0 dB plays it as it is")
-        Button { session.perform { $0.stepGain(clip.id, by: 1) } } label: {
+        Button { stepGain(clip, part, by: 1) } label: {
             stepIcon("plus")
         }
-        .disabled(clip.gainDB.rounded() >= Clip.gainRange.upperBound)
-        .help("Clip gain 1 dB louder")
+        .disabled(gainDB.rounded() >= Clip.gainRange.upperBound)
+        .help("\(whose) gain 1 dB louder")
         .accessibilityLabel("Gain up")
         loudness(clip)
         Divider().frame(height: 18)
         key(clip, track)
         Divider().frame(height: 18)
+        stems(clip)
         Toggle("Loop", isOn: Binding(get: { clip.looping },
                                      set: { value in session.perform { $0.setLooping(clip.id, value) } }))
             .toggleStyle(.checkbox)
-        Toggle("Mute", isOn: Binding(get: { clip.muted },
-                                     set: { value in session.perform { $0.setMuted(clip.id, value) } }))
+        Toggle("Mute", isOn: Binding(get: { part.map { clip.parts[$0].muted } ?? clip.muted },
+                                     set: { value in
+                                         session.perform { document in
+                                             if let part { document.setPartMuted(clip.id, part, value) } else { document.setMuted(clip.id, value) }
+                                         }
+                                     }))
             .toggleStyle(.checkbox)
+            .help(part.map { "Mute the \($0.name) of this clip" } ?? "Mute the clip")
         Divider().frame(height: 18)
         Menu {
             ForEach(TransitionStyle.allCases) { style in
@@ -282,6 +294,30 @@ struct ClipBar: View {
         }
     }
 
+    /// While the song is being separated, how far that has got, and a
+    /// spinner while its stems are decoded or shifted - the clip plays the
+    /// whole song until they are there.
+    @ViewBuilder
+    private func stems(_ clip: Clip) -> some View {
+        if let fraction = library.separating[clip.trackID] {
+            ProgressView(value: fraction)
+                .progressViewStyle(.circular)
+                .controlSize(.small)
+                .help("Separating the song into stems: \(Int(fraction * 100)) %. The clip plays the whole song until they are ready.")
+        } else if clip.parts.playsStems,
+                  library.shifting.contains(Library.ShiftKey(track: clip.trackID, pitch: clip.pitch, stems: true)) {
+            ProgressView()
+                .controlSize(.small)
+                .help("Preparing the stems; the clip plays the whole song until they are ready")
+        }
+    }
+
+    private func stepGain(_ clip: Clip, _ part: Stem?, by steps: Int) {
+        session.perform { document in
+            if let part { document.stepPartGain(clip.id, part, by: steps) } else { document.stepGain(clip.id, by: steps) }
+        }
+    }
+
     /// "+15 ct", or "0 ct" in tune.
     static func fineLabel(_ cents: Int) -> String {
         cents == 0 ? "0 ct" : String(format: "%+d ct", cents)
@@ -321,12 +357,13 @@ struct ClipBar: View {
         Button("Match") {
             session.perform { $0.matchGain(clip.id, grids: grids, loudness: { profiles[$0] }) }
         }
-        .disabled(own == nil || referenceLUFS == nil || target != nil)
+        .disabled(own == nil || referenceLUFS == nil || target != nil || session.selectedPart != nil)
         .help(matchHelp(reference, referenceLUFS))
     }
 
     private func matchHelp(_ reference: Clip?, _ referenceLUFS: Double?) -> String {
         if target != nil { return "Off while the loudness target is on (Settings)" }
+        if session.selectedPart != nil { return "Matches the whole clip: pick the clip's own row" }
         guard let reference else { return "Nothing to match: no clip plays into this one or before it" }
         let name = library.track(reference.trackID)?.displayName ?? "the clip before"
         guard let referenceLUFS else { return "“\(name)” has not been measured yet" }

@@ -114,7 +114,7 @@ struct HelpView: View {
             HelpHeading("The window")
             HelpKeys([
                 ("Top", "Transport, position, tempo and level; Rec; the **tool** (Clips, Volume, Pan, LPF, HPF); follow and zoom."),
-                ("Middle", "The ruler, the **tempo** strip and the lanes **A, B, C**, each with mute (M) and solo (S) and two knobs. Click a lane's colour bar to change its colour."),
+                ("Middle", "The ruler, the **tempo** strip and the lanes **A, B, C**, each with mute (M), solo (S), its stems (›) and two knobs. Click a lane's colour bar to change its colour."),
                 ("Bottom", "The selected clip, in two rows: which track, where it sits, its beatgrid, Lock and the Move mode on top; its tempo, gain, key, fine tune, loop, mute and crossfade below."),
                 ("Beatgrid pane", "Opened between the timeline and the clip rows for one track, with its own waveform, cue points and loop marking; E folds it to a bar and back. See Beatgrid and BPM."),
                 ("Right", "The library. The Library toolbar button shows and hides it; the Beatmix button beside it adds the selected tracks at the end of the mix."),
@@ -136,7 +136,7 @@ struct HelpView: View {
                 ("⌖ (BPM row)", "Around Selection: set the BPM range to ±2 BPM about the selected track's tempo and switch it on."),
                 ("↑ ↓", "Step through the list; while a preview plays, each track is auditioned as you reach it."),
                 ("Play (bottom)", "Audition the selected track; the slider seeks. Auditioning pauses the mix - unless Settings › Audio Output gives Audition an output of its own (headphones), where it plays beside the mix and the live set."),
-                ("Right-click", "No Transition, Beatmix 4 to 64 (see Timeline and Clips › Beatmix), At Playhead: Beatmix 4 to 64 (one track), Edit Beatgrid…, Correct BPM…, Analyse Again (with the analyser chosen in Settings), Write BPM to File, Remove from Library."),
+                ("Right-click", "No Transition, Beatmix 4 to 64 (see Timeline and Clips › Beatmix), At Playhead: Beatmix 4 to 64 (one track), Edit Beatgrid…, Correct BPM…, Analyse Again (with the analyser chosen in Settings), Write BPM to File, Separate Stems / Delete Stems (see Timeline and Clips › Stems), Remove from Library."),
                 ("Key", "The key the analysis hears, as its Camelot code and name (8A Am): the same number, or one either side with the same letter, mixes in key. Dimmed where another key fits almost as well. Click the header to sort round the wheel. It is an estimate - check by ear."),
                 ("Right-click the header", "Show or hide columns: BPM, Time, Key, LUFS (the whole song's loudness, before any trim or gain) and Type (the file format). Drag a header to reorder, drag its edge to resize. Ultramix remembers the layout on this Mac."),
             ])
@@ -176,13 +176,14 @@ struct HelpView: View {
                 ("B  /  ⌘T", "Split the selected clips at the playhead, on the nearest beat."),
                 ("⌘D", "Duplicate: to the lane below, above, or next to it."),
                 ("L  /  ⌘L", "Loop on or off."),
-                ("M  /  ⌃⌘M", "Mute the clip."),
+                ("M  /  ⌃⌘M", "Mute the clip - or, with a stem row picked (expanded lane), only that stem."),
                 ("⇧⌘X", "Apply the current transition to the selection's overlaps - or to every transition, with nothing selected."),
                 ("Lock (bottom)", "Lock the selected clip: it cannot be dragged, nudged or moved to another lane, and its automation cannot be changed - no points placed, moved or deleted, no movements drawn, ⌥⌫ leaves it, a transition writes only the other clip, and a beatmix adds the next track without fading it. It shows a lock in its title. Trim, gain, tempo, loop, mute, split and delete still work. Saved with the mix; a split or duplicate keeps it. To guard only against moving clips, set Move to Off."),
                 ("Move (bottom)", "What dragging a clip snaps to, for every clip: Off - dragging does not move clips; Free - any beat; Half - every half bar; Full - bar lines. Remembered on this Mac."),
                 ("Gain − / + (bottom)", "Make the selected clip quieter or louder, 1 dB per click, from −24 to +12 dB. 0 dB plays it as it is. The gain comes before the lane's volume, pan and filters, so fades drawn on it keep working, and a split or duplicate keeps it. A clip with a gain shows it in its title. With the loudness target on, the gain is an offset from the target."),
                 ("Key − / + (bottom)", "Play the selected clip a semitone lower or higher, up to six either way. Its length, beatgrid and curves stay exactly as they are - only the pitch moves. Beside the number, the key it then plays in, as a Camelot code, when the track's key is known. The shift is rendered once in the background (a second or two for a track) and kept in the cache; until it is ready the clip plays unshifted, and a bounce waits for it. A split or duplicate keeps it, and the clip's title shows it."),
                 ("Fine − / + (bottom)", "Tune the selected clip in cents, 5 per click, up to 50 either way - for a record a little off concert pitch, alone or on top of a key shift. Rendered together with the key shift, the same way; the Camelot code beside Key does not change."),
+                ("Stems (› beside M S)", "Expands the lane: under each clip a row each for its drums, bass, vocals and everything else, with the stem's own waveform. Every automation tool works in a stem row exactly as in the clip's - draw volume, pan, a low-pass or high-pass on the vocals alone, select, delete, double-click to reset - and a stem row at rest plays the stem as it is. Click a stem row to pick it: Gain and Mute at the bottom then work on that stem (−24 to +12 dB). The clip's own row, on top, works on the four together, as before. Where the clip sits, its length, loop, tempo and key are the clip's - the stems move and change with it, and split and duplicate keep them. A song is separated only when you ask: click in the stem rows of a clip not yet separated, or right-click it › Separate Stems (Demucs, a neural network; a few seconds a song, once). The stems are kept in the working directory's Stems folder; right-click › Delete Stems frees the space. Without stems the clip plays the whole song, its title says \"not separated\", and a bounce separates what it needs first. Transitions and beatmixes write the clip's own row only. Stem rows are bounced; LUFS and Match measure the whole clip."),
                 ("LUFS (bottom)", "How loud the selected clip plays: integrated loudness (EBU R128) of the part of the song it plays, trims included, with the gain it plays with. The lane's volume, pan and filters are not included. It follows every gain step and trim at once."),
                 ("Match (bottom)", "Set the gain, to the whole dB, so the clip is as loud as the clip it mixes out of - the one on another lane playing where it starts - or, with none, the clip that ended last before it. Muted clips are skipped. One undo step; at the end of the gain range it gets as close as it can. Off while the loudness target is on."),
                 ("Loudness target (Settings)", "Optional: every clip plays at one loudness, −14 LUFS unless you type another, to 0.1 dB and within −24 … +12 dB of gain. Playback and bounce follow it; the gains in the mix are kept, so switching it off brings them back. It belongs to this Mac, not to the mix."),
@@ -375,6 +376,7 @@ struct HelpView: View {
                 ("Audio", "Copies of the imported songs."),
                 ("Mixes", "Saved mixes (.ultramix). File › Open Mix lists them, newest first."),
                 ("Bounces", "WAV and MP3 exports."),
+                ("Stems", "Songs separated into drums, bass and vocals, kept so they are separated once."),
                 ("Cache", "Decoded audio, waveforms and loudness - safe to delete; it is rebuilt."),
             ])
             HelpText("**Eject an external drive before unplugging it.** Ultramix closes the working directory when the drive is ejected; pulling the cable while a mix is open can crash it.")

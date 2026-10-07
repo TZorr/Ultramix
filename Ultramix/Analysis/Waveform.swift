@@ -94,6 +94,71 @@ nonisolated struct Waveform: Sendable {
         self.init(finest: level, framesPerBucket: perBucket)
     }
 
+    // MARK: - Stems
+
+    /// The four stems' waveforms, in the order of `Stem.allCases`, drawn to
+    /// the song's scale - its largest peak - so a quiet stem looks quiet
+    /// beside the song rather than blown up to full height. Drums, bass and
+    /// vocals from their decoded audio, back at their true level; "other"
+    /// worked out as the song less the three, a bucket at a time, so no
+    /// whole copy of it is ever made.
+    static func stems(song: AudioFrames, _ stems: StemAudio) -> [Waveform] {
+        let frames = song.frameCount
+        var peak: Float = 0
+        vDSP_maxmgv(song.samples, 1, &peak, vDSP_Length(2 * frames))
+        let scale = peak > 0 ? 1 / peak : 1
+        let unstored = 1 / Stem.storedScale
+        return Stem.allCases.map { stem in
+            level(frames: frames, scale: scale) { first, count, into in
+                let n = vDSP_Length(2 * count), at = 2 * first
+                var factor = unstored
+                switch stem {
+                case .drums: vDSP_vsmul(stems.drums.samples + at, 1, &factor, into, 1, n)
+                case .bass: vDSP_vsmul(stems.bass.samples + at, 1, &factor, into, 1, n)
+                case .vocals: vDSP_vsmul(stems.vocals.samples + at, 1, &factor, into, 1, n)
+                case .other:
+                    vDSP_vadd(stems.drums.samples + at, 1, stems.bass.samples + at, 1, into, 1, n)
+                    vDSP_vadd(into, 1, stems.vocals.samples + at, 1, into, 1, n)
+                    var minus = -unstored
+                    vDSP_vsma(into, 1, &minus, song.samples + at, 1, into, 1, n)
+                }
+            }
+        }
+    }
+
+    /// A waveform of `frames` frames whose interleaved samples `fill` writes
+    /// a bucket at a time, scaled by `scale`.
+    private static func level(frames: Int, scale: Float,
+                              fill: (_ first: Int, _ count: Int, _ into: UnsafeMutablePointer<Float>) -> Void) -> Waveform {
+        let perBucket = max(1, Int((Double(frames) / Double(bucketCount)).rounded(.up)))
+        let buckets = max(1, Int((Double(frames) / Double(perBucket)).rounded(.up)))
+        var level = WaveformLevel(minL: [], maxL: [], rmsL: [], minR: [], maxR: [], rmsR: [])
+        for array in [\WaveformLevel.minL, \.maxL, \.rmsL, \.minR, \.maxR, \.rmsR] {
+            level[keyPath: array] = [Float](repeating: 0, count: buckets)
+        }
+        let scratch = UnsafeMutablePointer<Float>.allocate(capacity: 2 * perBucket)
+        defer { scratch.deallocate() }
+        for bucket in 0..<buckets {
+            let first = bucket * perBucket
+            let count = min(perBucket, frames - first)
+            guard count > 0 else { break }
+            fill(first, count, scratch)
+            for channel in 0..<2 {
+                var low: Float = 0, high: Float = 0, meanSquare: Float = 0
+                vDSP_minv(scratch + channel, 2, &low, vDSP_Length(count))
+                vDSP_maxv(scratch + channel, 2, &high, vDSP_Length(count))
+                vDSP_measqv(scratch + channel, 2, &meanSquare, vDSP_Length(count))
+                let rms = meanSquare.squareRoot()
+                if channel == 0 {
+                    level.minL[bucket] = low * scale; level.maxL[bucket] = high * scale; level.rmsL[bucket] = rms * scale
+                } else {
+                    level.minR[bucket] = low * scale; level.maxR[bucket] = high * scale; level.rmsR[bucket] = rms * scale
+                }
+            }
+        }
+        return Waveform(finest: level, framesPerBucket: perBucket)
+    }
+
     // MARK: - Storage
     //
     // Raw little-endian floats: a header of two Int32s (bucket count, frames

@@ -16,6 +16,7 @@ import SwiftUI
 
 struct ClipDrawItem {
     let id: UUID
+    let trackID: UUID
     let lane: Int
     let geometry: ClipGeometry
     let segments: [ClipSegment]
@@ -35,12 +36,35 @@ struct ClipDrawItem {
     let anchorBeat: Int
     /// In the clip's own beats; add `anchorBeat` for the timeline.
     let automation: ClipAutomation
+    /// Its stems, drawn as rows under it when its lane is expanded.
+    let parts: ClipParts
+    let expanded: Bool
+    /// The stems' waveforms, in the order of `Stem.allCases`; nil until the
+    /// track is separated and they are loaded.
+    let stemWaveforms: [Waveform]?
+    /// How far the track's separation has got, while it runs.
+    let separating: Double?
+    /// Whether the track has stems of this separator's - from the library,
+    /// not the disk, so drawing stats no files.
+    let separated: Bool
+    /// The stem row picked on this clip, if it is selected on one.
+    let selectedPart: Stem?
+
+    /// The automation of a row: the clip's own, or a stem's.
+    func automation(_ part: Stem?) -> ClipAutomation {
+        part.map { parts[$0].automation } ?? automation
+    }
+
+    /// The rows it draws automation in: its own, and its stems' when expanded.
+    var rows: [Stem?] { expanded ? [nil] + Stem.allCases.map { $0 } : [nil] }
 }
 
 /// A step, sine or triangle being dragged out, before it is committed.
 struct DraftGesture {
     var clip: UUID
     var lane: Int
+    /// The stem row it is drawn on; nil for the clip's own.
+    var part: Stem? = nil
     /// As dragged, in timeline beats - what is committed.
     var drawn: AutomationGesture
     /// In the clip's own beats and cut to the clip - what is drawn.
@@ -54,6 +78,8 @@ struct TimelineSnapshot {
     /// The master tempo while it is locked: every tempo point sits on it.
     var master: Double?
     var curves: [LanePlan]
+    /// Each lane's stems' curves, `[lane][stem.rawValue]`, for the rows.
+    var partCurves: [[LanePlan]]
     var laneMask: Int
     var tool: TimelineTool
     var draft: DraftGesture?
@@ -90,27 +116,43 @@ struct TimelineSnapshot {
         let grids = session.grids
         var curves = session.plan?.lanes
             ?? (0..<Clip.laneCount).map { LanePlan(document: document, lane: $0, grids: grids) }
+        var partCurves = session.plan?.partLanes ?? (0..<Clip.laneCount).map { lane in
+            Stem.allCases.map { LanePlan(document: document, lane: lane, grids: grids, part: $0) }
+        }
         if let draft {
-            curves[draft.lane] = LanePlan(document: document, lane: draft.lane, grids: grids) { clip in
-                guard clip.id == draft.clip else { return clip.automation }
-                var drawn = clip.automation
-                drawn.gestures.append(draft.gesture)
-                return drawn
+            // The row being drawn on, with the gesture in it.
+            var withDraft = document
+            if let i = withDraft.clips.firstIndex(where: { $0.id == draft.clip }) {
+                if let part = draft.part {
+                    withDraft.clips[i].parts[part].automation.gestures.append(draft.gesture)
+                } else {
+                    withDraft.clips[i].automation.gestures.append(draft.gesture)
+                }
+            }
+            if let part = draft.part {
+                partCurves[draft.lane][part.rawValue] = LanePlan(document: withDraft, lane: draft.lane, grids: grids, part: part)
+            } else {
+                curves[draft.lane] = LanePlan(document: withDraft, lane: draft.lane, grids: grids)
             }
         }
         self.curves = curves
+        self.partCurves = partCurves
         let outOfRange = session.plan?.outOfRange ?? []
         for clip in document.clips {
             guard let track = library.track(clip.trackID), let grid = track.grid else { continue }
             let geometry = ClipGeometry(clip: clip, grid: grid)
             clips.append(ClipDrawItem(
-                id: clip.id, lane: clip.lane, geometry: geometry, segments: geometry.segments(),
+                id: clip.id, trackID: clip.trackID, lane: clip.lane, geometry: geometry, segments: geometry.segments(),
                 title: track.displayName, sourceBPM: grid.bpm, targetBPM: clip.targetBPM,
                 tempoAnchorBeat: clip.tempoAnchorBeat, rampStartBeat: clip.rampStartBeat,
                 waveform: library.waveforms[clip.trackID],
                 selected: session.selection.contains(clip.id), muted: clip.muted,
                 locked: clip.locked, looping: clip.looping, outOfRange: outOfRange.contains(clip.id), gainDB: clip.gainDB,
-                pitch: clip.pitch, anchorBeat: clip.anchorBeat, automation: clip.automation))
+                pitch: clip.pitch, anchorBeat: clip.anchorBeat, automation: clip.automation,
+                parts: clip.parts, expanded: session.expandedLanes.contains(clip.lane),
+                stemWaveforms: library.stemWaveforms[clip.trackID], separating: library.separating[clip.trackID],
+                separated: track.stems?.isCurrent == true,
+                selectedPart: session.selection.contains(clip.id) ? session.selectedPart : nil))
         }
     }
 }
@@ -403,10 +445,14 @@ enum TimelineDrawing {
         inner.clip(to: shape)
         if clip.muted { inner.opacity = 0.35 }
         inner.fill(shape, with: .color(color.opacity(0.16)))
-        let waveRect = CGRect(x: rect.minX, y: rect.minY + 17, width: rect.width, height: max(8, rect.height - 21))
+        // The clip's own row: the whole clip, or its top row when expanded.
+        let own = layout.rowRect(clip.lane, part: nil)
+        let top = rect.minY, bottom = clip.expanded ? own.maxY : rect.maxY
+        let waveRect = CGRect(x: rect.minX, y: top + 17, width: rect.width, height: max(8, bottom - top - 21))
         for segment in clip.segments {
-            waveform(&inner, segment, clip, waveRect, color, size, layout)
+            waveform(&inner, segment, clip.waveform, clip, waveRect, color, size, layout)
         }
+        if clip.expanded { stemRows(&inner, clip, rect, color, size, layout) }
         if clip.segments.count > 1 {
             var seams = Path()
             for segment in clip.segments.dropFirst() {
@@ -422,6 +468,10 @@ enum TimelineDrawing {
         if clip.gainDB != 0 { title = String(format: "%+.0f dB · ", clip.gainDB) + title }
         // So is a key shift.
         if !clip.pitch.isNone { title = "Key \(clip.pitch.label) · " + title }
+        // And stems played apart, which a folded lane does not show.
+        if !clip.parts.isNeutral {
+            if !clip.separated { title = "Stems · not separated · " + title } else if !clip.expanded { title = "Stems · " + title }
+        }
         if clip.looping { title = "∞  " + title }
         if clip.muted { title = "Muted · " + title }
         // Not red alone: a lane can now be red itself, and the warning would
@@ -434,9 +484,50 @@ enum TimelineDrawing {
         context.stroke(shape, with: .color(color.opacity(clip.selected ? 1 : 0.55)), lineWidth: clip.selected ? 2 : 1)
     }
 
-    private static func waveform(_ context: inout GraphicsContext, _ segment: ClipSegment, _ clip: ClipDrawItem,
-                                 _ rect: CGRect, _ color: Color, _ size: CGSize, _ layout: TimelineLayout) {
-        guard let waveform = clip.waveform else { return }
+    /// An expanded clip's stems, a row each under its own: the stem's
+    /// waveform at the song's scale, its name and level, the row picked on
+    /// it tinted - or, until the song is separated, how far that has got.
+    private static func stemRows(_ context: inout GraphicsContext, _ clip: ClipDrawItem, _ rect: CGRect,
+                                 _ color: Color, _ size: CGSize, _ layout: TimelineLayout) {
+        var lines = Path()
+        for stem in Stem.allCases {
+            let row = layout.rowRect(clip.lane, part: stem)
+            let box = CGRect(x: rect.minX, y: row.minY, width: rect.width, height: row.height)
+            lines.move(to: CGPoint(x: rect.minX, y: row.minY))
+            lines.addLine(to: CGPoint(x: rect.maxX, y: row.minY))
+            let part = clip.parts[stem]
+            if clip.selectedPart == stem {
+                context.fill(Path(box), with: .color(color.opacity(0.18)))
+            }
+            var layer = context
+            if part.muted { layer.opacity = 0.35 }
+            if let waves = clip.stemWaveforms {
+                let waveBox = box.insetBy(dx: 0, dy: 2)
+                for segment in clip.segments {
+                    waveform(&layer, segment, waves[stem.rawValue], clip, waveBox, color, size, layout)
+                }
+            }
+            var label = stem.name.capitalized
+            if part.muted { label += " · Muted" } else if part.gainDB != 0 { label += String(format: " · %+.0f dB", part.gainDB) }
+            if box.height >= 14 {
+                context.draw(Text(label).font(.system(size: 9, weight: .medium)).foregroundStyle(.secondary),
+                             at: CGPoint(x: max(rect.minX, 0) + 6, y: box.minY + 1), anchor: .topLeading)
+            }
+        }
+        context.stroke(lines, with: .color(color.opacity(0.35)), lineWidth: 0.5)
+        guard clip.stemWaveforms == nil else { return }
+        let first = layout.rowRect(clip.lane, part: Stem.allCases.first!)
+        let last = layout.rowRect(clip.lane, part: Stem.allCases.last!)
+        let note = clip.separating.map { "Separating into stems… \(Int($0 * 100)) %" }
+            ?? (clip.separated ? "Loading the stems…" : "Click to separate into stems")
+        context.draw(Text(note).font(.system(size: 10)).foregroundStyle(.secondary),
+                     at: CGPoint(x: max(rect.minX, 0) + 60, y: (first.minY + last.maxY) / 2), anchor: .leading)
+    }
+
+    private static func waveform(_ context: inout GraphicsContext, _ segment: ClipSegment, _ waveform: Waveform?,
+                                 _ clip: ClipDrawItem, _ rect: CGRect, _ color: Color, _ size: CGSize,
+                                 _ layout: TimelineLayout) {
+        guard let waveform else { return }
         let framesPerBeat = 60 / clip.sourceBPM * AudioFrames.sampleRate
         let framesPerPixel = framesPerBeat / layout.pixelsPerBeat
         var levelIndex = 0
@@ -488,9 +579,12 @@ enum TimelineDrawing {
             // enough to see that a fade is there without cluttering.
             guard active || (snapshot.tool == .clips && kind == .volume) else { continue }
             for clip in snapshot.clips {
-                guard active || !clip.automation.volume.isEmpty
-                        || clip.automation.gestures.contains(where: { $0.kind == kind }) else { continue }
-                clipAutomation(&context, clip, kind: kind, active: active, size, snapshot, layout)
+                for part in clip.rows {
+                    let drawn = clip.automation(part)
+                    guard active || !drawn.nodes(kind).isEmpty
+                            || drawn.gestures.contains(where: { $0.kind == kind }) else { continue }
+                    clipAutomation(&context, clip, part: part, kind: kind, active: active, size, snapshot, layout)
+                }
             }
         }
         if let marquee = snapshot.marquee {
@@ -504,9 +598,9 @@ enum TimelineDrawing {
     /// everything here is cut to the clip: the curve, the guide and the bands
     /// to its width, the nodes to its visible span. What a trim hid stays
     /// stored, but it is neither heard nor shown.
-    private static func clipAutomation(_ context: inout GraphicsContext, _ clip: ClipDrawItem, kind: AutomationKind,
-                                       active: Bool, _ size: CGSize, _ snapshot: TimelineSnapshot,
-                                       _ layout: TimelineLayout) {
+    private static func clipAutomation(_ context: inout GraphicsContext, _ clip: ClipDrawItem, part: Stem?,
+                                       kind: AutomationKind, active: Bool, _ size: CGSize,
+                                       _ snapshot: TimelineSnapshot, _ layout: TimelineLayout) {
         let lane = clip.lane
         let rect = layout.rect(for: clip.geometry, lane: lane)
         let x0 = max(rect.minX, 0)
@@ -515,21 +609,26 @@ enum TimelineDrawing {
         let anchor = Double(clip.anchorBeat)
         let span = clip.geometry.start...clip.geometry.end
         let color = snapshot.laneColors[lane]
-        let curve = snapshot.curves[lane].curve(kind)
-        let laneRect = layout.laneRect(lane)
-        // The full lane height, so a curve at +12 dB or silence is not cut
+        let curve = part.map { snapshot.partCurves[lane][$0.rawValue].curve(kind) } ?? snapshot.curves[lane].curve(kind)
+        let drawn = clip.automation(part)
+        let picked = snapshot.selection?.part == part ? snapshot.selection : nil
+        func y(_ value: Double) -> CGFloat { layout.y(value: value, kind: kind, lane: lane, part: part) }
+        let laneRect = layout.rowRect(lane, part: part)
+        // The full row height, so a curve at +12 dB or silence is not cut
         // off at the clip's inset.
         var inner = context
         inner.clip(to: Path(CGRect(x: x0, y: laneRect.minY, width: x1 - x0, height: laneRect.height)))
 
         if active {
-            let rest = layout.y(value: kind == .volume ? 0 : kind.restValue, kind: kind, lane: lane)
+            // A stem's volume rests where the clip's does: the curve is a
+            // change on top of its level, and at rest it is none.
+            let rest = y(kind == .volume && part == nil ? 0 : kind.restValue)
             var guide = Path()
             guide.move(to: CGPoint(x: x0, y: rest))
             guide.addLine(to: CGPoint(x: x1, y: rest))
             inner.stroke(guide, with: .color(Color.primary.opacity(0.15)), style: StrokeStyle(lineWidth: 1, dash: [2, 4]))
-            let bandTop = laneRect.minY + 3
-            let bandHeight = layout.laneHeight - 6
+            let bandTop = laneRect.minY + (part == nil ? 3 : 1)
+            let bandHeight = laneRect.height - (part == nil ? 6 : 2)
             func band(_ gesture: AutomationGesture) -> Path? {
                 let start = max(gesture.start + anchor, span.lowerBound)
                 let end = min(gesture.end + anchor, span.upperBound)
@@ -538,12 +637,13 @@ enum TimelineDrawing {
                                                 width: CGFloat((end - start) * layout.pixelsPerBeat), height: bandHeight),
                             cornerRadius: 3)
             }
-            for gesture in clip.automation.gestures where gesture.kind == kind {
+            for gesture in drawn.gestures where gesture.kind == kind {
                 guard let shape = band(gesture) else { continue }
-                let picked = snapshot.selection?.contains(gesture: gesture.id, clip: clip.id) == true
-                inner.fill(shape, with: .color(picked ? snapshot.accent.opacity(0.22) : Color.primary.opacity(0.07)))
+                let chosen = picked?.contains(gesture: gesture.id, clip: clip.id) == true
+                inner.fill(shape, with: .color(chosen ? snapshot.accent.opacity(0.22) : Color.primary.opacity(0.07)))
             }
-            if let draft = snapshot.draft, draft.clip == clip.id, draft.gesture.kind == kind, let shape = band(draft.gesture) {
+            if let draft = snapshot.draft, draft.clip == clip.id, draft.part == part, draft.gesture.kind == kind,
+               let shape = band(draft.gesture) {
                 inner.fill(shape, with: .color(snapshot.accent.opacity(0.14)))
             }
         }
@@ -554,7 +654,7 @@ enum TimelineDrawing {
         var x = x0
         while true {
             let beat = min(layout.beat(x), span.upperBound - 1e-9)
-            let point = CGPoint(x: x, y: layout.y(value: curve.value(at: beat), kind: kind, lane: lane))
+            let point = CGPoint(x: x, y: y(curve.value(at: beat)))
             if x == x0 { path.move(to: point) } else { path.addLine(to: point) }
             if x >= x1 { break }
             x = min(x + 2, x1)
@@ -563,13 +663,14 @@ enum TimelineDrawing {
                      lineWidth: active ? 1.6 : 1)
 
         guard active else { return }
-        for node in clip.automation.nodes(kind) where span.contains(node.beat + anchor) {
-            let point = CGPoint(x: layout.x(node.beat + anchor), y: layout.y(value: node.value, kind: kind, lane: lane))
+        let radius: CGFloat = part == nil ? 4 : 3
+        for node in drawn.nodes(kind) where span.contains(node.beat + anchor) {
+            let point = CGPoint(x: layout.x(node.beat + anchor), y: y(node.value))
             guard point.x > -6, point.x < size.width + 6 else { continue }
-            let dot = Path(ellipseIn: CGRect(x: point.x - 4, y: point.y - 4, width: 8, height: 8))
+            let dot = Path(ellipseIn: CGRect(x: point.x - radius, y: point.y - radius, width: 2 * radius, height: 2 * radius))
             context.fill(dot, with: .color(color))
             context.stroke(dot, with: .color(Color.white.opacity(0.9)), lineWidth: 1)
-            if snapshot.selection?.contains(node, clip: clip.id) == true {
+            if picked?.contains(node, clip: clip.id) == true {
                 let ring = Path(ellipseIn: CGRect(x: point.x - 7, y: point.y - 7, width: 14, height: 14))
                 context.stroke(ring, with: .color(snapshot.accent), lineWidth: 2)
             }

@@ -50,11 +50,62 @@ nonisolated struct RenderSegment: Sendable {
     let gridPhase: Double
     /// The clip's gain as a linear factor.
     var gain: Float = 1
+    /// The clip's stems at its levels, when they are not all the same:
+    /// what is played instead of `audio`. `audio` is still what the splice
+    /// search compares, so where the grains start does not depend on the
+    /// levels.
+    var stems: StemMix? = nil
+    /// The stem bus it plays into, when it is a stem with automation of
+    /// its own; nil for the lane.
+    var part: Stem? = nil
 
     /// The fractional source frame the tempo map puts at timeline frame `n`.
     func nominalSourceFrame(atTimelineFrame n: Int, tempo: TempoMap) -> Double {
         let beat = tempo.beat(atSeconds: Double(n) / AudioFrames.sampleRate)
         return (beat - fileStartBeat) * 60 / sourceBPM * AudioFrames.sampleRate
+    }
+}
+
+/// A track's three stored stems, decoded, at the pitch its clip plays.
+nonisolated struct StemAudio: Sendable {
+    let drums: AudioFrames
+    let bass: AudioFrames
+    let vocals: AudioFrames
+
+    var all: [AudioFrames] { [drums, bass, vocals] }
+}
+
+/// What a clip plays when its stems are at different levels: per sample,
+/// `full · k0 + drums · k1 + bass · k2 + vocals · k3`, where `full` is the
+/// song at the clip's pitch. "Other" is the song less the three, so
+/// k0 = g(other) and k(i) = (g(i) − g(other)) / Stem.storedScale: the song
+/// at its own level carries "other", and each stored stem adds the
+/// difference its own level makes.
+///
+/// Unchecked: the pointers are into the AudioFrames it holds, which are
+/// immutable and live as long as it does.
+nonisolated struct StemMix: @unchecked Sendable {
+    let audio: StemAudio
+    let k0, k1, k2, k3: Float
+    private let drums, bass, vocals: UnsafePointer<Float>
+
+    /// `gains` per stem, in the order of `Stem.allCases`.
+    init(_ audio: StemAudio, gains: [Float]) {
+        self.audio = audio
+        let other = gains[Stem.other.rawValue], scale = Stem.storedScale
+        k0 = other
+        k1 = (gains[Stem.drums.rawValue] - other) / scale
+        k2 = (gains[Stem.bass.rawValue] - other) / scale
+        k3 = (gains[Stem.vocals.rawValue] - other) / scale
+        drums = audio.drums.samples
+        bass = audio.bass.samples
+        vocals = audio.vocals.samples
+    }
+
+    /// Sample `i` (interleaved) of the mix, `full` being the song's.
+    @inline(__always)
+    func sample(_ full: UnsafePointer<Float>, _ i: Int) -> Float {
+        full[i] * k0 + drums[i] * k1 + bass[i] * k2 + vocals[i] * k3
     }
 }
 
@@ -144,6 +195,7 @@ nonisolated final class Stretcher {
 
         let samples = segment.audio.samples
         let frames = segment.audio.frameCount
+        let stems = segment.stems
         let edge = Float(Self.edgeFrames)
         var n = first
         while n < end {
@@ -180,15 +232,25 @@ nonisolated final class Stretcher {
                 let source = current + p
                 var l: Float = 0, r: Float = 0
                 if source >= 0 && source < frames {
-                    l = samples[2 * source]
-                    r = samples[2 * source + 1]
+                    if let stems {
+                        l = stems.sample(samples, 2 * source)
+                        r = stems.sample(samples, 2 * source + 1)
+                    } else {
+                        l = samples[2 * source]
+                        r = samples[2 * source + 1]
+                    }
                 }
                 if splice && p < fadeLength {
                     let old = continuation + p
                     var ol: Float = 0, or: Float = 0
                     if old >= 0 && old < frames {
-                        ol = samples[2 * old]
-                        or = samples[2 * old + 1]
+                        if let stems {
+                            ol = stems.sample(samples, 2 * old)
+                            or = stems.sample(samples, 2 * old + 1)
+                        } else {
+                            ol = samples[2 * old]
+                            or = samples[2 * old + 1]
+                        }
                     }
                     let w = curve[p]
                     l = ol + (l - ol) * w

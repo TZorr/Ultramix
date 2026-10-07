@@ -187,6 +187,9 @@ nonisolated extension MixDocument {
         }
         for i in targets where !clips[i].locked {
             clips[i].automation = ClipAutomation()
+            // Its stems' rows too: drawn on the clip all the same. Their
+            // gains and mutes are not automation and stay.
+            for stem in Stem.allCases { clips[i].parts[stem].automation = ClipAutomation() }
         }
     }
 
@@ -375,7 +378,7 @@ nonisolated extension MixDocument {
                          rampStartBeat: clip.rampStartBeat,
                          trimStart: clip.trimStart + (split - shape.bodyStart), trimEnd: clip.trimEnd,
                          muted: clip.muted, locked: clip.locked, gainDB: clip.gainDB, keyShift: clip.keyShift,
-                         fineTune: clip.fineTune, automation: clip.automation)
+                         fineTune: clip.fineTune, parts: clip.parts, automation: clip.automation)
         left.trimEnd += shape.bodyEnd - split
         // Both halves keep every point, but a transition's bar goes to the
         // half it begins on - on both it would be drawn twice.
@@ -432,7 +435,7 @@ nonisolated extension MixDocument {
                             trimStart: clip.trimStart, trimEnd: clip.trimEnd, looping: clip.looping,
                             loopLead: clip.loopLead, loopTail: clip.loopTail, muted: clip.muted,
                             locked: clip.locked, gainDB: clip.gainDB, keyShift: clip.keyShift,
-                            fineTune: clip.fineTune, automation: clip.automation)
+                            fineTune: clip.fineTune, parts: clip.parts, automation: clip.automation)
             copy.lane = lane
             if fits(copy, grids) {
                 clips.append(copy)
@@ -554,15 +557,26 @@ nonisolated extension MixDocument {
         index(of: id).flatMap { clips[$0].locked ? nil : $0 }
     }
 
+    /// The automation an edit is about: the clip's own (`part` nil), or one
+    /// of its stems'. Every automation edit below reads and writes through
+    /// these, so a stem row is edited exactly as the clip is.
+    func automation(_ i: Int, _ part: Stem?) -> ClipAutomation {
+        part.map { clips[i].parts[$0].automation } ?? clips[i].automation
+    }
+
+    private mutating func editAutomation(_ i: Int, _ part: Stem?, _ change: (inout ClipAutomation) -> Void) {
+        if let part { change(&clips[i].parts[part].automation) } else { change(&clips[i].automation) }
+    }
+
     /// Places a node on a clip, at timeline `beat`. Returns the node as
     /// stored, or nil when there is no such clip or it is locked.
     @discardableResult
-    mutating func addAutomationNode(clip id: UUID, kind: AutomationKind, beat: Double, value: Double,
-                                    tension: Double = 0, grids: GridLookup) -> AutomationNode? {
+    mutating func addAutomationNode(clip id: UUID, part: Stem? = nil, kind: AutomationKind, beat: Double,
+                                    value: Double, tension: Double = 0, grids: GridLookup) -> AutomationNode? {
         guard editable(id) != nil, let (i, span) = localSpan(id, grids) else { return nil }
         let node = AutomationNode(beat: Self.clamp(beat - Double(clips[i].anchorBeat), span),
                                   value: Self.clamp(value, kind.range), tension: tension)
-        clips[i].automation.setNodes(kind, clips[i].automation.nodes(kind) + [node])
+        editAutomation(i, part) { $0.setNodes(kind, $0.nodes(kind) + [node]) }
         return node
     }
 
@@ -570,20 +584,22 @@ nonisolated extension MixDocument {
     /// Returns the node as now stored, so a drag can find it again on its
     /// next step; a node that is gone (an undo mid-drag) is placed anew.
     @discardableResult
-    mutating func moveAutomationNode(clip id: UUID, kind: AutomationKind, from node: AutomationNode,
+    mutating func moveAutomationNode(clip id: UUID, part: Stem? = nil, kind: AutomationKind, from node: AutomationNode,
                                      toBeat beat: Double, value: Double, grids: GridLookup) -> AutomationNode? {
         guard editable(id) != nil, let (i, span) = localSpan(id, grids) else { return nil }
         let target = AutomationNode(beat: Self.clamp(beat - Double(clips[i].anchorBeat), span),
                                     value: Self.clamp(value, kind.range), tension: node.tension)
-        var nodes = clips[i].automation.nodes(kind)
-        if let n = nodes.firstIndex(of: node) { nodes[n] = target } else { nodes.append(target) }
-        clips[i].automation.setNodes(kind, nodes)
+        editAutomation(i, part) { automation in
+            var nodes = automation.nodes(kind)
+            if let n = nodes.firstIndex(of: node) { nodes[n] = target } else { nodes.append(target) }
+            automation.setNodes(kind, nodes)
+        }
         return target
     }
 
-    mutating func removeAutomationNode(clip id: UUID, kind: AutomationKind, node: AutomationNode) {
+    mutating func removeAutomationNode(clip id: UUID, part: Stem? = nil, kind: AutomationKind, node: AutomationNode) {
         guard let i = editable(id) else { return }
-        clips[i].automation.setNodes(kind, clips[i].automation.nodes(kind).filter { $0 != node })
+        editAutomation(i, part) { $0.setNodes(kind, $0.nodes(kind).filter { $0 != node }) }
     }
 
     /// A gesture given in timeline beats, turned into the clip's own beats
@@ -602,40 +618,41 @@ nonisolated extension MixDocument {
     /// Adds a gesture drawn in timeline beats to a clip; see
     /// `clippedGesture`. Returns whether anything was added.
     @discardableResult
-    mutating func addGesture(_ gesture: AutomationGesture, clip id: UUID, grids: GridLookup) -> Bool {
+    mutating func addGesture(_ gesture: AutomationGesture, clip id: UUID, part: Stem? = nil,
+                             grids: GridLookup) -> Bool {
         guard let i = editable(id), let local = clippedGesture(gesture, clip: id, grids: grids) else { return false }
-        clips[i].automation.gestures.append(local)
+        editAutomation(i, part) { $0.gestures.append(local) }
         return true
     }
 
-    mutating func removeGesture(_ gestureID: UUID, clip id: UUID) {
+    mutating func removeGesture(_ gestureID: UUID, clip id: UUID, part: Stem? = nil) {
         guard let i = editable(id) else { return }
-        clips[i].automation.gestures.removeAll { $0.id == gestureID }
+        editAutomation(i, part) { $0.gestures.removeAll { $0.id == gestureID } }
     }
 
     /// Deletes exactly the selected nodes and gestures, on every clip the
     /// selection reaches that is not locked.
     mutating func deleteAutomation(_ selection: AutomationSelection) {
+        let kind = selection.kind
         for (id, picked) in selection.nodes {
             guard let i = editable(id) else { continue }
-            let kept = clips[i].automation.nodes(selection.kind).filter { !picked.contains($0) }
-            clips[i].automation.setNodes(selection.kind, kept)
+            editAutomation(i, selection.part) { $0.setNodes(kind, $0.nodes(kind).filter { !picked.contains($0) }) }
         }
         for (id, gestures) in selection.gestures {
             guard let i = editable(id) else { continue }
-            clips[i].automation.gestures.removeAll { gestures.contains($0.id) }
+            editAutomation(i, selection.part) { $0.gestures.removeAll { gestures.contains($0.id) } }
         }
     }
 
     /// Puts one automation node back at its kind's resting value - where a
     /// lane with nothing drawn sits: −4 dB for volume, centre for pan, the
     /// filter out - keeping its position and its bend.
-    mutating func resetAutomationNode(_ node: AutomationNode, kind: AutomationKind, clip id: UUID) {
+    mutating func resetAutomationNode(_ node: AutomationNode, kind: AutomationKind, clip id: UUID, part: Stem? = nil) {
         guard let i = editable(id) else { return }
-        var nodes = clips[i].automation.nodes(kind)
+        var nodes = automation(i, part).nodes(kind)
         guard let n = nodes.firstIndex(of: node) else { return }
         nodes[n].value = kind.restValue
-        clips[i].automation.setNodes(kind, nodes)
+        editAutomation(i, part) { $0.setNodes(kind, nodes) }
     }
 
     // MARK: - Gain
@@ -654,6 +671,36 @@ nonisolated extension MixDocument {
     mutating func stepGain(_ id: UUID, by steps: Int) {
         guard let i = index(of: id) else { return }
         setGain(id, clips[i].gainDB.rounded() + Double(steps))
+    }
+
+    // MARK: - Stems
+
+    /// Sets one stem's gain in a clip, held and rounded as the clip's is.
+    /// Not refused on a locked clip: like the gain, it changes how the clip
+    /// sounds, not where it is.
+    mutating func setPartGain(_ id: UUID, _ stem: Stem, _ dB: Double) {
+        guard let i = index(of: id), dB.isFinite else { return }
+        clips[i].parts[stem].gainDB = min(max(dB, Clip.gainRange.lowerBound), Clip.gainRange.upperBound).rounded()
+    }
+
+    /// One click of the gain − / + buttons on a stem row; at either end
+    /// nothing changes.
+    mutating func stepPartGain(_ id: UUID, _ stem: Stem, by steps: Int) {
+        guard let i = index(of: id) else { return }
+        setPartGain(id, stem, clips[i].parts[stem].gainDB.rounded() + Double(steps))
+    }
+
+    mutating func setPartMuted(_ id: UUID, _ stem: Stem, _ muted: Bool) {
+        guard let i = index(of: id) else { return }
+        clips[i].parts[stem].muted = muted
+    }
+
+    /// One stem back as it is: 0 dB, unmuted, no automation of its own.
+    /// Its automation is the clip's, so a locked clip keeps it.
+    mutating func resetPart(_ id: UUID, _ stem: Stem) {
+        guard let i = index(of: id) else { return }
+        let automation = clips[i].locked ? clips[i].parts[stem].automation : ClipAutomation()
+        clips[i].parts[stem] = ClipPart(automation: automation)
     }
 
     // MARK: - Key

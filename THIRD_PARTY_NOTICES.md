@@ -11,6 +11,7 @@ These notices must be kept with the source and with any binary distribution.
 | LAME (`libmp3lame`) | 3.100 (`lame-master`, alpha 1) | LGPL-2.0 | `Ultramix/LAME/` |
 | Beat This! weights (`small0`) | — | MIT | `Ultramix/Resources/BeatThis_small0.mlpackage` |
 | Core ML conversion of those weights | — | MIT | same file |
+| Demucs v4 weights (`htdemucs`) | 4.0.1 | MIT | `Ultramix/Resources/Demucs_htdemucs.mlpackage` |
 | Signalsmith Stretch (ported to Swift) | 1.3.2 | MIT | `Ultramix/Engine/KeyShifter.swift` |
 | Signalsmith Linear (STFT and FFT, ported to Swift) | `main`, October 2026 | MIT | `Ultramix/Engine/ShiftSTFT.swift`, `Ultramix/Engine/ModifiedRealFFT.swift` |
 
@@ -19,6 +20,8 @@ Full licence texts ship with the source:
 - `Ultramix/LAME/COPYING.LAME.txt` — GNU Library General Public License v2
 - `Ultramix/Resources/BeatThis-LICENSE.txt` — the MIT texts for Beat This!
   and for the Core ML conversion
+- `Ultramix/Resources/Demucs-LICENSE.txt` — the MIT text for Demucs and the
+  note on the Core ML conversion
 - `Ultramix/Resources/Signalsmith-LICENSE.txt` — the MIT texts for
   Signalsmith Stretch and Signalsmith Linear
 
@@ -60,6 +63,22 @@ Full licence texts ship with the source:
   mono, a log-mel spectrum of 128 bands at 50 frames a second) and reads its
   output, and everything the grid is then built from is the Ultramix
   analyser's.
+
+## Demucs (stem separation)
+
+- **What:** the "htdemucs" weights of Demucs v4 (Hybrid Transformer Demucs),
+  a music source separation network, as a Core ML model
+  (`Ultramix/Resources/Demucs_htdemucs.mlpackage`, 93 MB). Used only when a song is
+  separated into stems.
+- **Copyright:** © Meta Platforms, Inc. and affiliates (Alexandre Défossez,
+  Simon Rouard and others) — <https://github.com/facebookresearch/demucs>.
+- **Core ML conversion:** made with `Tools/convert-demucs.py`, part of
+  Ultramix. It contains only the network: the short-time Fourier transforms,
+  the normalisation and the chunking around it are done in Swift.
+- **License:** MIT. The full text ships with the model as
+  `Ultramix/Resources/Demucs-LICENSE.txt`.
+- **How it is used:** the model file is compiled into the app bundle by Xcode
+  and run through Core ML. No code from Demucs is compiled into Ultramix.
 
 ## Signalsmith Stretch and Signalsmith Linear (key shift)
 

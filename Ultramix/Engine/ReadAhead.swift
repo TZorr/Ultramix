@@ -89,6 +89,10 @@ nonisolated final class ReadAhead: @unchecked Sendable {
             let upper = min(segment.audio.frameCount, Int(high) + margin)
             if lower < upper {
                 spans.append(Span(audio: segment.audio, frames: lower..<upper))
+                // Stems are as long as the song, and read at the same frames.
+                for stem in segment.stems?.audio.all ?? [] {
+                    spans.append(Span(audio: stem, frames: lower..<upper))
+                }
             }
         }
         return spans

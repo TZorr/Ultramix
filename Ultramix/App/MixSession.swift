@@ -120,7 +120,34 @@ final class MixSession {
                 lastPick = .clips
                 selectedMark = nil
             }
+            // A stem row belongs to the clip it was picked on.
+            if selection != oldValue { selectedPart = nil }
         }
+    }
+    /// The stem row the selected clip was picked on, in an expanded lane:
+    /// the clip bar's gain and mute then work on that stem. Nil for the clip
+    /// itself. Set after `selection`, which clears it.
+    var selectedPart: Stem?
+    /// The lanes shown with a row per stem under each clip. View state, as
+    /// the tool is: not in the mix, not an undo step.
+    private(set) var expandedLanes: Set<Int> = []
+
+    /// Expands or folds a lane. Expanding loads the stems' waveforms of the
+    /// songs on it that are separated; the others are separated only when
+    /// asked to, clip by clip (TimelinePanel), never by expanding.
+    func setLaneExpanded(_ lane: Int, _ expanded: Bool) {
+        if expanded { expandedLanes.insert(lane) } else { expandedLanes.remove(lane) }
+        if !expanded, let id = selection.first, document.clips.first(where: { $0.id == id })?.lane == lane {
+            selectedPart = nil
+        }
+        prepareExpandedStems()
+    }
+
+    /// The stems' waveforms of the separated songs on the expanded lanes.
+    private func prepareExpandedStems() {
+        let tracks = document.clips.filter { expandedLanes.contains($0.lane) }.map(\.trackID)
+        guard !tracks.isEmpty else { return }
+        library.prepareStemWaveforms(tracks)
     }
     /// The transition bar picked in the strip under the ruler. Picking one
     /// lets go of the clips, so Delete and ⇧⌘X mean the bar.
@@ -490,8 +517,17 @@ final class MixSession {
         }
     }
 
+    /// M: mutes the selected clips - or, with one clip picked on a stem row
+    /// (`selectedPart`), only that stem; the clip's own row is the sum.
     func toggleMuteSelection() {
         let ids = selection
+        if ids.count == 1, let id = ids.first, let part = selectedPart {
+            perform { document in
+                let muted = document.clips.first { $0.id == id }?.parts[part].muted ?? false
+                document.setPartMuted(id, part, !muted)
+            }
+            return
+        }
         perform { document in
             for id in ids {
                 let muted = document.clips.first { $0.id == id }?.muted ?? false
@@ -670,7 +706,8 @@ final class MixSession {
         let gain = clipGain()
         engine.install { generation in
             RenderPlan(document: document, grids: grids, audio: { library.audio(for: $0) }, generation: generation,
-                       gainDB: gain, shiftedAudio: { library.audio(for: $0, pitch: $1) })
+                       gainDB: gain, shiftedAudio: { library.audio(for: $0, pitch: $1) },
+                       stemAudio: { library.stems(for: $0, pitch: $1) })
         }
         engine.setLaneMask(laneMask)
         plan = engine.currentPlan
@@ -683,15 +720,26 @@ final class MixSession {
         // Pitch shifts likewise; such a clip plays unshifted until its shift is
         // rendered. Called with none too: that is how a shift stepped past
         // or back to 0 is dropped from the queue.
-        let shifts = document.clips.sorted { $0.anchorBeat < $1.anchorBeat }
+        let ordered = document.clips.sorted { $0.anchorBeat < $1.anchorBeat }
+        let shifts = ordered
             .filter { !$0.pitch.isNone }
             .map { Library.ShiftKey(track: $0.trackID, pitch: $0.pitch) }
             .filter { library.audio(for: $0.track, pitch: $0.pitch) == nil }
-        library.prepareShifts(shifts)
+        // Stems likewise, decoded or shifted - but only of songs that are
+        // separated: separating is asked for, clip by clip, and a song whose
+        // stems were deleted stays without them. Such a clip plays the whole
+        // song; a bounce separates what it needs (prepareAudio).
+        let stems = ordered
+            .filter { $0.parts.playsStems && library.hasStems($0.trackID) }
+            .map { Library.ShiftKey(track: $0.trackID, pitch: $0.pitch, stems: true) }
+            .filter { library.stems(for: $0.track, pitch: $0.pitch) == nil }
+        library.prepareShifts(shifts + stems)
+        prepareExpandedStems()
     }
 
-    /// Every track the mix plays, decoded, and every pitch shift rendered - a
-    /// bounce has no second chance at a clip whose audio arrives late. False,
+    /// Every track the mix plays, decoded, every pitch shift rendered and
+    /// every clip's stems ready - a bounce has no second chance at a clip
+    /// whose audio arrives late. False,
     /// with a message, if one cannot be.
     func prepareAudio() async -> Bool {
         let ids = Set(document.clips.filter { !$0.muted }.map(\.trackID))
@@ -707,6 +755,20 @@ final class MixSession {
         guard unshifted.isEmpty else {
             let names = Set(unshifted.compactMap { library.track($0.track)?.displayName }).sorted()
             message = "Not bounced: the pitch shift of \(names.joined(separator: ", ")) could not be rendered."
+            return false
+        }
+        let stemClips = document.clips.filter { !$0.muted && $0.parts.playsStems }
+        let unseparated = await library.readySeparations(Set(stemClips.map(\.trackID)))
+        guard unseparated.isEmpty else {
+            let names = unseparated.compactMap { library.track($0)?.displayName }.sorted()
+            message = "Not bounced: the stems of \(names.joined(separator: ", ")) could not be separated."
+            return false
+        }
+        let stems = Set(stemClips.map { Library.ShiftKey(track: $0.trackID, pitch: $0.pitch, stems: true) })
+        let unprepared = await library.readyShifts(stems)
+        guard unprepared.isEmpty else {
+            let names = Set(unprepared.compactMap { library.track($0.track)?.displayName }).sorted()
+            message = "Not bounced: the stems of \(names.joined(separator: ", ")) could not be prepared."
             return false
         }
         return true
@@ -903,7 +965,8 @@ final class MixSession {
     func bouncePlan() -> RenderPlan {
         let library = library
         return RenderPlan(document: document, grids: grids, audio: { library.audio(for: $0) }, generation: -1,
-                          gainDB: clipGain(), shiftedAudio: { library.audio(for: $0, pitch: $1) })
+                          gainDB: clipGain(), shiftedAudio: { library.audio(for: $0, pitch: $1) },
+                          stemAudio: { library.stems(for: $0, pitch: $1) })
     }
 
     /// The gain each clip plays with: its own, or - with a loudness target

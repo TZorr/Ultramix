@@ -29,25 +29,72 @@ nonisolated enum CacheSweep {
     /// with a fine tune "<id>.k+2c-15.sw1.f32". Whole semitones keep the
     /// name they had before there were cents, so their renders stay valid.
     static func shiftedName(_ id: UUID, pitch: PitchShift) -> String {
-        func signed(_ v: Int) -> String { v > 0 ? "+\(v)" : "\(v)" }
-        let cents = pitch.cents == 0 ? "" : "c\(signed(pitch.cents))"
-        return "\(id.uuidString).k\(signed(pitch.semitones))\(cents).\(shiftTag).f32"
+        "\(id.uuidString).\(pitchTag(pitch)).\(shiftTag).f32"
     }
 
-    /// The track and shift a pitch-shift cache file holds, if `name` is one
-    /// of the current tag.
-    static func shift(in name: String) -> (id: UUID, pitch: PitchShift)? {
-        let parts = name.split(separator: ".", omittingEmptySubsequences: false)
-        guard parts.count == 4, parts[2] == shiftTag, parts[3] == "f32", parts[1].hasPrefix("k"),
-              let id = UUID(uuidString: String(parts[0])) else { return nil }
-        let amounts = parts[1].dropFirst().split(separator: "c", omittingEmptySubsequences: false)
+    /// "k+2", "k+2c-15", "k0c+25": how a shift is named in the cache.
+    static func pitchTag(_ pitch: PitchShift) -> String {
+        func signed(_ v: Int) -> String { v > 0 ? "+\(v)" : "\(v)" }
+        let cents = pitch.cents == 0 ? "" : "c\(signed(pitch.cents))"
+        return "k\(signed(pitch.semitones))\(cents)"
+    }
+
+    /// The shift a `pitchTag` names; nil for anything else, "c0" included,
+    /// which is never written.
+    static func pitch(fromTag tag: Substring) -> PitchShift? {
+        guard tag.hasPrefix("k") else { return nil }
+        let amounts = tag.dropFirst().split(separator: "c", omittingEmptySubsequences: false)
         guard (1...2).contains(amounts.count), let semitones = Int(amounts[0]) else { return nil }
         var cents = 0
         if amounts.count == 2 {
             guard let c = Int(amounts[1]), c != 0 else { return nil }
             cents = c
         }
-        return (id, PitchShift(semitones: semitones, cents: cents))
+        return PitchShift(semitones: semitones, cents: cents)
+    }
+
+    /// The track and shift a pitch-shift cache file holds, if `name` is one
+    /// of the current tag.
+    static func shift(in name: String) -> (id: UUID, pitch: PitchShift)? {
+        let parts = name.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count == 4, parts[2] == shiftTag, parts[3] == "f32",
+              let id = UUID(uuidString: String(parts[0])), let pitch = pitch(fromTag: parts[1]) else { return nil }
+        return (id, pitch)
+    }
+
+    /// The track, stem and shift a decoded stem in the cache holds:
+    /// "<id>.ht1.drums.f32", or shifted "<id>.ht1.drums.k+2.sw1.f32" -
+    /// whatever separator made it, so stems of an older one still count
+    /// towards the size limit and go with their track. A stem's waveform,
+    /// "<id>.ht1.vocals.wave" ("other" too), counts as one, at no pitch.
+    static func stem(in name: String) -> (id: UUID, stem: Stem, pitch: PitchShift)? {
+        let parts = name.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count == 4 || parts.count == 6, parts.last == "f32" || parts.last == "wave",
+              let id = UUID(uuidString: String(parts[0])) else { return nil }
+        if parts.last == "wave" {
+            guard parts.count == 4, let stem = Stem.allCases.first(where: { $0.name == parts[2] }) else { return nil }
+            return (id, stem, .none)
+        }
+        guard let stem = Stem.stored.first(where: { $0.name == parts[2] }) else { return nil }
+        guard parts.count == 6 else { return (id, stem, .none) }
+        guard parts[4] == shiftTag, let pitch = pitch(fromTag: parts[3]) else { return nil }
+        return (id, stem, pitch)
+    }
+
+    /// The stored stems among `names` - the Stems folder - that can be
+    /// deleted: a track's the library no longer holds, ones another
+    /// separator made (another tag: the track separates again with this
+    /// one), and leftovers of interrupted writes (".<name>.<uuid>.partial.caf").
+    /// Decoded stems in the cache go with `orphans`, by their id.
+    static func stemOrphans(among names: [String], keeping ids: Set<UUID>) -> [String] {
+        let stored = Set(Stem.stored.map(\.name))
+        return names.filter { name in
+            if name.hasPrefix(".") && name.hasSuffix(".partial.caf") { return true }
+            let parts = name.split(separator: ".", omittingEmptySubsequences: false)
+            guard parts.count == 4, parts[3] == "caf", stored.contains(String(parts[2])),
+                  let id = UUID(uuidString: String(parts[0])) else { return false }
+            return !ids.contains(id) || parts[1] != StemSeparator.tag
+        }
     }
 
     /// The names among `names` that can be deleted, given the ids of the

@@ -62,22 +62,29 @@ nonisolated struct LaneCurve: Sendable {
     }
 }
 
-/// A lane's curves, ready to be read at any beat.
+/// A lane's curves, ready to be read at any beat - or one stem's across the
+/// lane (`part`), which the renderer works on before the lane's own.
 nonisolated struct LanePlan: Sendable {
     let volume: LaneCurve
     let pan: LaneCurve
     let lowPass: LaneCurve
     let highPass: LaneCurve
+    /// What the volume curve's level is divided by: 1 for a lane, whose
+    /// curve is its level; the resting level for a stem, whose curve is a
+    /// change on top of the clip's, so a stem row at rest plays as it is.
+    let volumeReference: Double
 
+    /// - Parameter part: the stem whose rows these are; nil for the lane.
     /// - Parameter automation: what a clip plays. Its own, except where the
     ///   timeline shows a gesture that is still being dragged out.
-    init(document: MixDocument, lane: Int, grids: GridLookup,
+    init(document: MixDocument, lane: Int, grids: GridLookup, part: Stem? = nil,
          automation: (Clip) -> ClipAutomation = { $0.automation }) {
+        volumeReference = part == nil ? 1 : Automation.gain(dB: AutomationKind.volume.restValue)
         var regions: [AutomationKind: [LaneCurve.Region]] = [:]
         for clip in document.clips where clip.lane == lane {
             guard let grid = grids(clip.trackID) else { continue }
             let shape = ClipGeometry(clip: clip, grid: grid)
-            let drawn = automation(clip)
+            let drawn = part.map { clip.parts[$0].automation } ?? automation(clip)
             for kind in AutomationKind.allCases {
                 regions[kind, default: []].append(LaneCurve.Region(
                     start: shape.start, end: shape.end, anchor: Double(clip.anchorBeat),
@@ -110,6 +117,12 @@ nonisolated final class RenderPlan: @unchecked Sendable {
     /// addition is not associative.
     let segments: [RenderSegment]
     let lanes: [LanePlan]
+    /// Each lane's stems' curves, `[lane][stem.rawValue]`, for the stem
+    /// segments' buses and for the expanded lanes' rows.
+    let partLanes: [[LanePlan]]
+    /// The stem buses that have segments, bit `lane * 4 + stem`: the renderer
+    /// works through these, and only these, on every block.
+    let partBuses: Int
     /// Last frame of the mix, muted clips included.
     let endFrame: Int
     /// Clips whose tempo leaves the stretcher's range somewhere.
@@ -123,9 +136,20 @@ nonisolated final class RenderPlan: @unchecked Sendable {
     ///   with a key shift or fine tune. While a shift is still being rendered
     ///   the clip plays unshifted rather than not at all; the plan is rebuilt
     ///   when the shift arrives, and a bounce waits for every shift first.
+    /// - Parameter stemAudio: a track's stems at a pitch, for clips whose
+    ///   stems differ. Until they are there - separated, decoded and
+    ///   shifted - the clip plays the whole song, at its gain.
+    ///
+    /// A clip whose stems only have levels plays as one segment that mixes
+    /// them (StemMix). A stem with automation of its own is a segment of its
+    /// own, on its lane's bus for that stem, through that stem's curves; the
+    /// clip's segment then plays the others. All of a clip's segments find
+    /// their splices in the whole song, so they cut in the same places and
+    /// still add up to it.
     init(document: MixDocument, grids: GridLookup, audio: (UUID) -> AudioFrames?, generation: Int,
          gainDB: (Clip) -> Double = { $0.gainDB },
-         shiftedAudio: (UUID, PitchShift) -> AudioFrames? = { _, _ in nil }) {
+         shiftedAudio: (UUID, PitchShift) -> AudioFrames? = { _, _ in nil },
+         stemAudio: (UUID, PitchShift) -> StemAudio? = { _, _ in nil }) {
         self.generation = generation
         let tempo = document.tempoMap(grids)
         self.tempo = tempo
@@ -134,15 +158,42 @@ nonisolated final class RenderPlan: @unchecked Sendable {
 
         var segments: [RenderSegment] = []
         var outOfRange = Set<UUID>()
+        var partBuses = 0
         for clip in document.clips where !clip.muted {
             guard let grid = grids(clip.trackID), let original = audio(clip.trackID) else { continue }
-            let frames = clip.pitch.isNone ? original : shiftedAudio(clip.trackID, clip.pitch) ?? original
+            let shifted = clip.pitch.isNone ? nil : shiftedAudio(clip.trackID, clip.pitch)
+            let frames = shifted ?? original
+            // The stems at the pitch the song actually plays at, so a shift
+            // still on its way leaves both unshifted.
+            let pitch = shifted == nil ? PitchShift.none : clip.pitch
             let geometry = ClipGeometry(clip: clip, grid: grid)
             let extremes = tempo.bpmExtremes(in: max(0, geometry.start)...max(0, geometry.end))
             if !Self.ratioRange.contains(extremes.min / grid.bpm) || !Self.ratioRange.contains(extremes.max / grid.bpm) {
                 outOfRange.insert(clip.id)
             }
-            let gain = Float(Automation.gain(dB: gainDB(clip)))
+            var gain = Float(Automation.gain(dB: gainDB(clip)))
+            // What the clip plays: the song (nil), or a mix of its stems, on
+            // the lane (part nil) or on a stem's bus.
+            var voices: [(stems: StemMix?, part: Stem?)] = [(nil, nil)]
+            if !clip.parts.isNeutral {
+                if !clip.parts.playsStems {
+                    // All alike is the clip louder or quieter: no stems.
+                    gain *= clip.parts.drums.gain
+                } else if let parts = stemAudio(clip.trackID, pitch),
+                          parts.all.allSatisfy({ $0.frameCount == frames.frameCount }) {
+                    let gains = Stem.allCases.map { clip.parts[$0].gain }
+                    let apart = Stem.allCases.filter { !clip.parts[$0].automation.isEmpty }
+                    var rest = gains
+                    for stem in apart { rest[stem.rawValue] = 0 }
+                    voices = rest.contains { $0 != 0 } ? [(StemMix(parts, gains: rest), nil)] : []
+                    for stem in apart {
+                        var alone = [Float](repeating: 0, count: gains.count)
+                        alone[stem.rawValue] = gains[stem.rawValue]
+                        voices.append((StemMix(parts, gains: alone), stem))
+                        partBuses |= 1 << (clip.lane * Stem.allCases.count + stem.rawValue)
+                    }
+                }
+            }
             for piece in geometry.segments() {
                 let start = max(0, frame(piece.start))
                 let end = frame(piece.end)
@@ -151,16 +202,22 @@ nonisolated final class RenderPlan: @unchecked Sendable {
                 // sample; for a loop copy, shifted by however many bodies.
                 let downbeat = piece.fileStart + grid.preRollBeats
                 let phase = downbeat - downbeat.rounded(.down)
-                segments.append(RenderSegment(clipID: clip.id, lane: clip.lane, audio: frames,
-                                              startFrame: start, endFrame: end,
-                                              fileStartBeat: piece.fileStart, sourceBPM: grid.bpm,
-                                              gridPhase: phase,
-                                              gain: gain))
+                for voice in voices {
+                    segments.append(RenderSegment(clipID: clip.id, lane: clip.lane, audio: frames,
+                                                  startFrame: start, endFrame: end,
+                                                  fileStartBeat: piece.fileStart, sourceBPM: grid.bpm,
+                                                  gridPhase: phase,
+                                                  gain: gain, stems: voice.stems, part: voice.part))
+                }
             }
         }
         self.segments = segments
         self.outOfRange = outOfRange
+        self.partBuses = partBuses
         lanes = (0..<Clip.laneCount).map { LanePlan(document: document, lane: $0, grids: grids) }
+        partLanes = (0..<Clip.laneCount).map { lane in
+            Stem.allCases.map { LanePlan(document: document, lane: lane, grids: grids, part: $0) }
+        }
         endFrame = frame(document.endBeat(grids))
         memos = .allocate(capacity: max(1, segments.count))
         memos.initialize(repeating: StretchMemo(), count: max(1, segments.count))

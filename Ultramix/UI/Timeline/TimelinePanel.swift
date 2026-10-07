@@ -56,6 +56,8 @@ struct TimelinePanel: View {
     @State private var draftMark: ClosedRange<Double>?
     /// The bar under the pointer, for the right-click menu.
     @State private var hoveredMark: MarkRef?
+    /// The clip under the pointer, for the context menu.
+    @State private var hoveredClip: UUID?
     @State private var zoomBase: Double?
     /// The wheel's state - a reference, so that tracking the pointer does not
     /// redraw the timeline on every move.
@@ -91,14 +93,17 @@ struct TimelinePanel: View {
         /// Dragging the diamond where a clip's tempo ramp begins. `started`
         /// once the drag has recorded its undo step.
         case rampStart(id: UUID, started: Bool)
-        case node(clip: UUID, lane: Int, kind: AutomationKind, node: AutomationNode)
+        /// Automation states carry the row they are in: the clip's own
+        /// (`part` nil) or a stem's, in an expanded lane.
+        case node(clip: UUID, lane: Int, part: Stem?, kind: AutomationKind, node: AutomationNode)
         /// Dragging out a gesture on `clip`, from timeline beat `start`.
-        case draw(clip: UUID, lane: Int, kind: AutomationKind, start: Double, startValue: Double)
+        case draw(clip: UUID, lane: Int, part: Stem?, kind: AutomationKind, start: Double, startValue: Double)
         /// Pressed in empty space: a click places a node at `beat` on `clip`
         /// - outside every clip, nil, and a click does nothing - and a drag
         /// becomes a selection rectangle.
-        case pendingNode(clip: UUID?, lane: Int, kind: AutomationKind, beat: Double, value: Double)
-        case marquee(kind: AutomationKind, origin: CGPoint)
+        case pendingNode(clip: UUID?, lane: Int, part: Stem?, kind: AutomationKind, beat: Double, value: Double)
+        /// A rectangle stays in the row it began in; in a stem's, in its lane.
+        case marquee(kind: AutomationKind, lane: Int, part: Stem?, origin: CGPoint)
         /// Pressed in empty transition strip: a drag draws a bar from `start`.
         case newMark(start: Double)
         /// Dragging one end of a bar; `fixed` is the other end.
@@ -119,7 +124,7 @@ struct TimelinePanel: View {
             VStack(spacing: 0) {
             GeometryReader { geometry in
                 let layout = TimelineLayout(pixelsPerBeat: pixelsPerBeat, scrollX: scrollX, size: geometry.size,
-                                            laneOrder: heldOrder ?? session.laneOrder)
+                                            laneOrder: heldOrder ?? session.laneOrder, expanded: session.expandedLanes)
                 let snapshot = TimelineSnapshot(session: session, library: library, tool: tool, draft: draft,
                                                 selection: automationSelection, marquee: marquee,
                                                 accent: accent, draftMark: draftMark)
@@ -148,7 +153,7 @@ struct TimelinePanel: View {
                             .gesture(dragGesture(layout, snapshot))
                             .simultaneousGesture(magnifyGesture)
                             .onContinuousHover { phase in hover(phase, layout, snapshot) }
-                            .contextMenu { markMenu }
+                            .contextMenu { canvasMenu }
                             .dropDestination(for: String.self) { items, location in
                                 drop(items, at: location, layout)
                             }
@@ -450,6 +455,14 @@ struct TimelinePanel: View {
         guard let lane = layout.lane(atY: p.y) else { return .nothing }
         session.selectedMark = nil
         let beat = layout.beat(p.x)
+        // A press in the stem rows of a clip whose song is not separated
+        // separates it - in any tool: there is nothing in those rows yet to
+        // draw on or pick.
+        if layout.part(atY: p.y, lane: lane) != nil, let clip = clipHit(at: p, lane: lane, layout, snapshot),
+           !clip.separated {
+            if clip.separating == nil { library.separate([clip.trackID]) }
+            return .nothing
+        }
         if let kind = tool.kind {
             return beginAutomation(lane: lane, kind: kind, beat: beat, at: p, modifiers: modifiers, layout, snapshot)
         }
@@ -465,8 +478,11 @@ struct TimelinePanel: View {
             }
             if modifiers.contains(.shift) {
                 if session.selection.contains(clip.id) { session.selection.remove(clip.id) } else { session.selection.insert(clip.id) }
-            } else if !session.selection.contains(clip.id) {
-                session.selection = [clip.id]
+            } else {
+                if !session.selection.contains(clip.id) { session.selection = [clip.id] }
+                // Its row: a stem's in an expanded lane, which the clip bar's
+                // gain and mute then work on; the clip's own otherwise.
+                if session.selection == [clip.id] { session.selectedPart = layout.part(atY: p.y, lane: lane) }
             }
             let rect = layout.rect(for: clip.geometry, lane: lane)
             let edge = min(8, rect.width / 4)
@@ -486,48 +502,54 @@ struct TimelinePanel: View {
     private func beginAutomation(lane: Int, kind: AutomationKind, beat: Double, at p: CGPoint,
                                  modifiers: NSEvent.ModifierFlags, _ layout: TimelineLayout,
                                  _ snapshot: TimelineSnapshot) -> DragState {
+        // In an expanded lane, the row under the pointer: the clip's own or
+        // a stem's. Everything below is the same for either.
+        let part = layout.part(atY: p.y, lane: lane)
         // A node within grabbing distance, on any clip of the lane - one on a
         // clip's edge can be grabbed from just outside it. Nodes hidden by a
         // trim are not on screen, and cannot be hit either.
         for clip in snapshot.clips where clip.lane == lane && !clip.locked {
             let anchor = Double(clip.anchorBeat)
-            guard let hit = clip.automation.nodes(kind).first(where: {
+            guard let hit = clip.automation(part).nodes(kind).first(where: {
                 $0.beat + anchor >= clip.geometry.start && $0.beat + anchor <= clip.geometry.end
-                    && hypot(layout.x($0.beat + anchor) - p.x, layout.y(value: $0.value, kind: kind, lane: lane) - p.y) < 7
+                    && hypot(layout.x($0.beat + anchor) - p.x,
+                             layout.y(value: $0.value, kind: kind, lane: lane, part: part) - p.y) < 7
             }) else { continue }
             if modifiers.contains(.option) {
-                session.perform { $0.removeAutomationNode(clip: clip.id, kind: kind, node: hit) }
+                session.perform { $0.removeAutomationNode(clip: clip.id, part: part, kind: kind, node: hit) }
                 return .nothing
             }
             // A double-click puts the point back at its kind's resting
             // value. Click count comes from AppKit's current event.
             if (NSApp.currentEvent?.clickCount ?? 1) >= 2 {
-                session.perform { $0.resetAutomationNode(hit, kind: kind, clip: clip.id) }
+                session.perform { $0.resetAutomationNode(hit, kind: kind, clip: clip.id, part: part) }
                 return .nothing
             }
             session.beginGesture()
-            return .node(clip: clip.id, lane: lane, kind: kind, node: hit)
+            return .node(clip: clip.id, lane: lane, part: part, kind: kind, node: hit)
         }
         let clip = clipHit(at: p, lane: lane, layout, snapshot).flatMap { $0.locked ? nil : $0 }
         if modifiers.contains(.option) {
-            if let clip, let gesture = clip.automation.gestures.first(where: {
+            if let clip, let gesture = clip.automation(part).gestures.first(where: {
                 let local = beat - Double(clip.anchorBeat)
                 return $0.kind == kind && local >= $0.start && local <= $0.end
             }) {
-                session.perform { $0.removeGesture(gesture.id, clip: clip.id) }
+                session.perform { $0.removeGesture(gesture.id, clip: clip.id, part: part) }
             }
             return .nothing
         }
-        let value = layout.value(atY: p.y, kind: kind, lane: lane)
+        let value = layout.value(atY: p.y, kind: kind, lane: lane, part: part)
         if drawStyle != .nodes {
             // Dragging draws the movement; with ⇧ it selects instead.
-            if modifiers.contains(.shift) { return .marquee(kind: kind, origin: p) }
-            if let clip { return .draw(clip: clip.id, lane: lane, kind: kind, start: snap(beat), startValue: value) }
-            return .pendingNode(clip: nil, lane: lane, kind: kind, beat: beat, value: value)
+            if modifiers.contains(.shift) { return .marquee(kind: kind, lane: lane, part: part, origin: p) }
+            if let clip {
+                return .draw(clip: clip.id, lane: lane, part: part, kind: kind, start: snap(beat), startValue: value)
+            }
+            return .pendingNode(clip: nil, lane: lane, part: part, kind: kind, beat: beat, value: value)
         }
         // A click places a node, a drag selects - which one is only known
         // once the pointer moves, or is released without moving.
-        return .pendingNode(clip: clip?.id, lane: lane, kind: kind, beat: snap(beat), value: value)
+        return .pendingNode(clip: clip?.id, lane: lane, part: part, kind: kind, beat: snap(beat), value: value)
     }
 
     private func update(_ value: DragGesture.Value, _ layout: TimelineLayout, _ snapshot: TimelineSnapshot) {
@@ -584,30 +606,31 @@ struct TimelinePanel: View {
             session.perform(undoable: false, quiet: true) { document in
                 document.moveTempoAnchor(id, to: layout.beat(p.x), grids: grids)
             }
-        case .node(let clip, let lane, let kind, let node):
-            // Held to the clip: dragged past its edge, the point stops on it.
+        case .node(let clip, let lane, let part, let kind, let node):
+            // Held to the clip: dragged past its edge, the point stops on it -
+            // and to its row: the value is read in the row it was grabbed in.
             let beat = snap(layout.beat(p.x))
-            let level = layout.value(atY: p.y, kind: kind, lane: lane)
+            let level = layout.value(atY: p.y, kind: kind, lane: lane, part: part)
             var stored: AutomationNode?
             session.perform(undoable: false, quiet: true) { document in
-                stored = document.moveAutomationNode(clip: clip, kind: kind, from: node, toBeat: beat,
+                stored = document.moveAutomationNode(clip: clip, part: part, kind: kind, from: node, toBeat: beat,
                                                      value: level, grids: grids)
             }
-            if let stored { self.drag = .node(clip: clip, lane: lane, kind: kind, node: stored) }
-        case .draw(let clip, let lane, let kind, let start, let startValue):
+            if let stored { self.drag = .node(clip: clip, lane: lane, part: part, kind: kind, node: stored) }
+        case .draw(let clip, let lane, let part, let kind, let start, let startValue):
             guard let shape = drawStyle.shape else { return }
             let end = snap(layout.beat(p.x))
-            let level = layout.value(atY: p.y, kind: kind, lane: lane)
+            let level = layout.value(atY: p.y, kind: kind, lane: lane, part: part)
             let drawn = AutomationGesture(kind: kind, start: min(start, end), end: max(start, end),
                                           shape: shape, period: period, low: level, high: startValue)
             draft = session.document.clippedGesture(drawn, clip: clip, grids: grids)
-                .map { DraftGesture(clip: clip, lane: lane, drawn: drawn, gesture: $0) }
-        case .pendingNode(_, _, let kind, _, _):
+                .map { DraftGesture(clip: clip, lane: lane, part: part, drawn: drawn, gesture: $0) }
+        case .pendingNode(_, let lane, let part, let kind, _, _):
             guard moved > 3 else { return }
-            self.drag = .marquee(kind: kind, origin: value.startLocation)
-            updateMarquee(kind: kind, from: value.startLocation, to: p, layout, snapshot)
-        case .marquee(let kind, let origin):
-            updateMarquee(kind: kind, from: origin, to: p, layout, snapshot)
+            self.drag = .marquee(kind: kind, lane: lane, part: part, origin: value.startLocation)
+            updateMarquee(kind: kind, lane: lane, part: part, from: value.startLocation, to: p, layout, snapshot)
+        case .marquee(let kind, let lane, let part, let origin):
+            updateMarquee(kind: kind, lane: lane, part: part, from: origin, to: p, layout, snapshot)
         case .newMark(let start):
             guard moved > 3 else { return }
             let end = snapMark(layout.beat(p.x), layout)
@@ -650,12 +673,14 @@ struct TimelinePanel: View {
             // A draft exists only when a quarter beat or more of it lies on
             // the clip (see MixDocument.clippedGesture).
             if let draft {
-                session.perform { _ = $0.addGesture(draft.drawn, clip: draft.clip, grids: grids) }
+                session.perform { _ = $0.addGesture(draft.drawn, clip: draft.clip, part: draft.part, grids: grids) }
             }
             draft = nil
-        case .pendingNode(let clip, _, let kind, let beat, let value):
+        case .pendingNode(let clip, _, let part, let kind, let beat, let value):
             if let clip {
-                session.perform { _ = $0.addAutomationNode(clip: clip, kind: kind, beat: beat, value: value, grids: grids) }
+                session.perform {
+                    _ = $0.addAutomationNode(clip: clip, part: part, kind: kind, beat: beat, value: value, grids: grids)
+                }
             }
             automationSelection = nil
         case .marquee:
@@ -695,23 +720,25 @@ struct TimelinePanel: View {
 
     /// Draws the selection rectangle and picks what it encloses, clip by
     /// clip, so nothing a trim hid is ever picked. Locked clips are passed
-    /// over; a new rectangle replaces the old selection.
-    private func updateMarquee(kind: AutomationKind, from origin: CGPoint, to point: CGPoint,
+    /// over; a new rectangle replaces the old selection. It picks in one
+    /// row: the clips' own rows across the lanes, or one stem's row in the
+    /// lane it began in.
+    private func updateMarquee(kind: AutomationKind, lane: Int, part: Stem?, from origin: CGPoint, to point: CGPoint,
                                _ layout: TimelineLayout, _ snapshot: TimelineSnapshot) {
         let rect = CGRect(x: min(origin.x, point.x), y: min(origin.y, point.y),
                           width: abs(point.x - origin.x), height: abs(point.y - origin.y))
         marquee = rect
         let beats = layout.beat(rect.minX)...layout.beat(rect.maxX)
-        var selection = AutomationSelection(kind: kind)
-        for clip in snapshot.clips where !clip.locked {
-            let part = rect.intersection(layout.laneRect(clip.lane))
-            guard !part.isNull, part.height > 0 else { continue }
+        var selection = AutomationSelection(kind: kind, part: part)
+        for clip in snapshot.clips where !clip.locked && (part == nil || clip.lane == lane) {
+            let inRow = rect.intersection(layout.rowRect(clip.lane, part: part))
+            guard !inRow.isNull, inRow.height > 0 else { continue }
             let low = max(beats.lowerBound, clip.geometry.start)
             let high = min(beats.upperBound, clip.geometry.end)
             guard low <= high else { continue }
             let anchor = Double(clip.anchorBeat)
-            let values = layout.valueRange(fromY: part.minY, toY: part.maxY, kind: kind, lane: clip.lane)
-            let picked = clip.automation.selection(kind: kind, beats: (low - anchor)...(high - anchor), values: values)
+            let values = layout.valueRange(fromY: inRow.minY, toY: inRow.maxY, kind: kind, lane: clip.lane, part: part)
+            let picked = clip.automation(part).selection(kind: kind, beats: (low - anchor)...(high - anchor), values: values)
             if !picked.nodes.isEmpty { selection.nodes[clip.id] = picked.nodes }
             if !picked.gestures.isEmpty { selection.gestures[clip.id] = picked.gestures }
         }
@@ -784,6 +811,23 @@ struct TimelinePanel: View {
         }
     }
 
+    /// What a right-click offers: the transition bar under the pointer, or
+    /// the clip's stems - separating its song is asked for here, or by a
+    /// click in its stem rows, never done by expanding a lane.
+    @ViewBuilder
+    private var canvasMenu: some View {
+        if hoveredMark != nil {
+            markMenu
+        } else if let id = hoveredClip, let clip = session.document.clips.first(where: { $0.id == id }) {
+            let separated = library.track(clip.trackID)?.stems?.isCurrent == true
+            let separating = library.separating[clip.trackID] != nil
+            Button(separating ? "Separating Stems…" : "Separate Stems") { library.separate([clip.trackID]) }
+                .disabled(separated || separating)
+            Button("Delete Stems") { library.deleteStems(clip.trackID) }
+                .disabled(!separated && !separating)
+        }
+    }
+
     /// Right-click on a bar: write another style there, or delete it.
     @ViewBuilder
     private var markMenu: some View {
@@ -841,9 +885,12 @@ struct TimelinePanel: View {
         guard drag == nil else { return }
         guard case .active(let p) = phase else {
             hoveredMark = nil
+            hoveredClip = nil
             NSCursor.arrow.set()
             return
         }
+        let overClip = layout.lane(atY: p.y).flatMap { clipHit(at: p, lane: $0, layout, snapshot) }?.id
+        if hoveredClip != overClip { hoveredClip = overClip }
         let overMark = layout.transitionRect.contains(p) ? markHit(at: p, layout, snapshot) : nil
         if hoveredMark != overMark?.ref { hoveredMark = overMark?.ref }
         if layout.transitionRect.contains(p) {
@@ -948,8 +995,9 @@ struct PlayheadOverlay: View {
 ///
 /// The rows still line up with the canvas lanes by construction: the column
 /// holds the same ruler, transition and tempo heights at the top and the scroll bar's
-/// height at the bottom, and the three rows split what is left - the same
-/// arithmetic as `TimelineLayout.laneHeight`.
+/// height at the bottom, and the three rows split what is left by the same
+/// weights as the timeline's lanes (LaneGeometry) - worked out from the
+/// height the column is given, never from one measured over there.
 /// The tempo strip's header: its name, and the master tempo - a lock that
 /// holds the whole mix at one tempo, and the tempo it holds.
 struct MasterTempoHeader: View {
@@ -1004,49 +1052,136 @@ struct LaneHeaders: View {
                 .overlay(alignment: .top) { Divider() }
             // In the rows' order, keyed by lane: a header moves with its
             // lane rather than being renamed.
-            ForEach(order, id: \.self) { lane in
-                let state = session.document.lanes[lane]
-                HStack(spacing: 0) {
-                    VStack(alignment: .leading, spacing: 7) {
-                        HStack(spacing: 3) {
-                            LaneColorButton(session: session, lane: lane)
-                            Text("Lane \(LaneStyle.names[lane])")
-                                .font(.callout.weight(.semibold))
-                            // The playhead is the engine's frame counter, which
-                            // nothing observes, so the mark polls it - and is
-                            // handed a plain Bool, since a TimelineView's child
-                            // only redraws when its inputs change.
-                            TimelineView(.periodic(from: .now, by: 0.1)) { _ in
-                                LanePlayMark(on: session.isPlaying && session.document.soundingLanes(
-                                    atBeat: session.playheadBeat(), grids: session.grids, laneMask: session.laneMask
-                                ).contains(lane), color: LaneStyle.color(lane, session.document.lanes))
-                            }
-                        }
-                        HStack(spacing: 4) {
-                            LaneToggle(title: "M", on: state.muted, tint: .yellow) { session.toggleLaneMute(lane) }
-                                .help("Mute lane \(LaneStyle.names[lane])")
-                            LaneToggle(title: "S", on: state.solo, tint: .green) { session.toggleLaneSolo(lane) }
-                                .help("Solo lane \(LaneStyle.names[lane])")
-                        }
-                    }
-                    Spacer(minLength: 4)
-                    // Keyed by lane, like the rest of the header: in the live set
-                    // a lane's knobs move with its row.
-                    HStack(spacing: 2) {
-                        ForEach(0..<LaneKnobMath.knobsPerLane, id: \.self) { knob in
-                            LaneKnob(slot: LaneKnobMath.slot(lane: lane, knob: knob))
-                        }
-                    }
-                    .padding(.trailing, 6)
+            LaneRowsLayout(expanded: order.map { session.expandedLanes.contains($0) }) {
+                ForEach(order, id: \.self) { lane in
+                    laneHeader(lane)
                 }
-                .padding(.leading, 12)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-                .overlay(alignment: .top) { Divider() }
             }
             // The scroll bar and its divider, under the timeline.
             Color.clear.frame(height: TimelineScrollbar.height + 1)
         }
         .background(Color(nsColor: .controlBackgroundColor))
+    }
+
+    /// One lane's header: its name, switches and knobs, and in an expanded
+    /// lane its stems' names, at their rows.
+    @ViewBuilder
+    private func laneHeader(_ lane: Int) -> some View {
+        let state = session.document.lanes[lane]
+        let expanded = session.expandedLanes.contains(lane)
+        LaneRowLayout(expanded: expanded) {
+            HStack(spacing: 0) {
+                VStack(alignment: .leading, spacing: 7) {
+                    HStack(spacing: 3) {
+                        LaneColorButton(session: session, lane: lane)
+                        Text("Lane \(LaneStyle.names[lane])")
+                            .font(.callout.weight(.semibold))
+                        // The playhead is the engine's frame counter, which
+                        // nothing observes, so the mark polls it - and is
+                        // handed a plain Bool, since a TimelineView's child
+                        // only redraws when its inputs change.
+                        TimelineView(.periodic(from: .now, by: 0.1)) { _ in
+                            LanePlayMark(on: session.isPlaying && session.document.soundingLanes(
+                                atBeat: session.playheadBeat(), grids: session.grids, laneMask: session.laneMask
+                            ).contains(lane), color: LaneStyle.color(lane, session.document.lanes))
+                        }
+                    }
+                    HStack(spacing: 4) {
+                        LaneToggle(title: "M", on: state.muted, tint: .yellow) { session.toggleLaneMute(lane) }
+                            .help("Mute lane \(LaneStyle.names[lane])")
+                        LaneToggle(title: "S", on: state.solo, tint: .green) { session.toggleLaneSolo(lane) }
+                            .help("Solo lane \(LaneStyle.names[lane])")
+                        LaneExpandButton(on: expanded) { session.setLaneExpanded(lane, !expanded) }
+                            .help(expanded ? "Fold the stems of lane \(LaneStyle.names[lane]) away"
+                                           : "Show the stems of lane \(LaneStyle.names[lane])'s clips - drums, bass, vocals and the rest, each a row with its own level, mute and automation. Songs never separated are separated now.")
+                    }
+                }
+                Spacer(minLength: 4)
+                // Keyed by lane, like the rest of the header: in the live set
+                // a lane's knobs move with its row.
+                HStack(spacing: 2) {
+                    ForEach(0..<LaneKnobMath.knobsPerLane, id: \.self) { knob in
+                        LaneKnob(slot: LaneKnobMath.slot(lane: lane, knob: knob))
+                    }
+                }
+                .padding(.trailing, 6)
+            }
+            .padding(.leading, 12)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+            .overlay(alignment: .top) { Divider() }
+            if expanded {
+                ForEach(Stem.allCases, id: \.self) { stem in
+                    Text(stem.name.capitalized)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .padding(.leading, 26)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                        .overlay(alignment: .top) { Divider().opacity(0.5) }
+                }
+            }
+        }
+    }
+}
+
+/// The lane headers top to bottom, at the heights the timeline gives its
+/// lanes (LaneGeometry), out of the height the column offers.
+struct LaneRowsLayout: Layout {
+    let expanded: [Bool]
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        proposal.replacingUnspecifiedDimensions()
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let heights = LaneGeometry.heights(total: Double(bounds.height), expanded: expanded)
+        var y = bounds.minY
+        for (index, subview) in subviews.enumerated() where index < heights.count {
+            let height = CGFloat(heights[index])
+            subview.place(at: CGPoint(x: bounds.minX, y: y), proposal: ProposedViewSize(width: bounds.width, height: height))
+            y += height
+        }
+    }
+}
+
+/// One lane header: the lane's own row, and in an expanded lane a row per
+/// stem under it, as the timeline's rows (LaneGeometry.rows).
+struct LaneRowLayout: Layout {
+    let expanded: Bool
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        proposal.replacingUnspecifiedDimensions()
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        guard expanded, subviews.count > 1 else {
+            subviews.first?.place(at: bounds.origin, proposal: ProposedViewSize(bounds.size))
+            return
+        }
+        let rows = LaneGeometry.rows(laneHeight: Double(bounds.height))
+        let clip = CGFloat(rows.clip), stem = CGFloat(rows.stem)
+        subviews[0].place(at: bounds.origin, proposal: ProposedViewSize(width: bounds.width, height: clip))
+        for (index, subview) in subviews.dropFirst().enumerated() {
+            subview.place(at: CGPoint(x: bounds.minX, y: bounds.minY + clip + CGFloat(index) * stem),
+                          proposal: ProposedViewSize(width: bounds.width, height: stem))
+        }
+    }
+}
+
+/// Expands a lane into its stems' rows, beside mute and solo.
+struct LaneExpandButton: View {
+    let on: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: on ? "chevron.down" : "chevron.right")
+                .font(.system(size: 9, weight: .bold))
+                .frame(width: 22, height: 17)
+                .foregroundStyle(on ? Color.black : Color.secondary)
+                .background(RoundedRectangle(cornerRadius: 4).fill(on ? Color.accentColor : Color.secondary.opacity(0.15)))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(on ? "Hide stems" : "Show stems")
     }
 }
 

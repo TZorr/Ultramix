@@ -173,7 +173,8 @@ struct LibraryPanel: View {
                 .customizationID("type")
                 .defaultVisibility(.hidden)
                 TableColumn("") { row in
-                    StatusIcon(track: row.track, busy: library.busy.contains(row.id))
+                    StatusIcon(track: row.track, busy: library.busy.contains(row.id),
+                               separating: library.separating[row.id])
                 }
                 .width(18)
                 .customizationID("status")
@@ -355,6 +356,14 @@ struct LibraryPanel: View {
         .disabled(library.writingTags || !ids.contains { library.track($0)?.bpm != nil })
         .help("Write the measured tempo into the song files in the working directory")
         Divider()
+        // Ahead of the mix that will need them, or to free their space.
+        Button("Separate Stems") { library.separate(ordered(ids)) }
+            .disabled(!ids.contains { library.track($0)?.state != .failed && library.separating[$0] == nil && !library.hasStems($0) })
+            .help("Separate into drums, bass, vocals and the rest, kept in the Stems folder")
+        Button("Delete Stems") { ids.forEach { library.deleteStems($0) } }
+            .disabled(!ids.contains { library.separating[$0] != nil || library.track($0)?.stems != nil })
+            .help("Delete the stems to free the space; a clip that plays them separates the song again")
+        Divider()
         Button("Remove from Library") { library.remove(ids) }
             .disabled(ids.isEmpty || !ids.isDisjoint(with: used))
     }
@@ -489,10 +498,17 @@ struct TrackCell: View {
 struct StatusIcon: View {
     let track: Track
     let busy: Bool
+    /// How far its separation into stems has got, while it runs.
+    var separating: Double? = nil
 
     var body: some View {
         if busy || track.state == .pending || track.state == .running {
             ProgressView().controlSize(.mini)
+        } else if let separating {
+            ProgressView(value: separating)
+                .progressViewStyle(.circular)
+                .controlSize(.mini)
+                .help("Separating into stems: \(Int(separating * 100)) %")
         } else if track.state == .failed {
             Image(systemName: "exclamationmark.triangle.fill")
                 .foregroundStyle(.orange)

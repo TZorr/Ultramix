@@ -19,6 +19,14 @@
 //  background (`prepareShifts`); until it is there the clip plays unshifted.
 //  Shifts count towards the size limit with their track and go with it.
 //
+//  A clip whose stems play at different levels needs its track separated
+//  (StemSeparator), once, when it first asks (`separate`): the three stems
+//  are kept in the working directory's Stems folder and decoded into the
+//  cache beside the song. They are decoded again after the size limit took
+//  them, and shifted with the clip's key, through the same queue as the
+//  song's shifts (a ShiftKey for the stems). Until they are there the clip
+//  plays the whole song.
+//
 //  With copying switched off (ImportCopy) a song outside the working directory
 //  keeps its absolute path and a security-scoped bookmark, resolved for as
 //  long as each read takes (`songURL`). Playback reads the cache and never
@@ -52,6 +60,11 @@ final class Library {
     private(set) var decoding: Set<UUID> = []
     /// Key shifts being rendered. Observed like `decoding`.
     private(set) var shifting: Set<ShiftKey> = []
+    /// Tracks being separated into stems, with how far each has got (0…1).
+    private(set) var separating: [UUID: Double] = [:]
+    /// Each separated track's stems' waveforms, in the order of
+    /// `Stem.allCases`, for the expanded lanes' rows (`prepareStemWaveforms`).
+    private(set) var stemWaveforms: [UUID: [Waveform]] = [:]
     /// What is selected in the library panel. It lives here, not in the
     /// panel, so that a menu command can act on it too.
     var selection: Set<UUID> = []
@@ -86,6 +99,16 @@ final class Library {
     /// The render running for each shift, to be cancelled when no clip
     /// wants it any more.
     @ObservationIgnored private var shiftTasks: [ShiftKey: Task<ShiftOutcome, Never>] = [:]
+    @ObservationIgnored private var stemFrames: [ShiftKey: StemAudio] = [:]
+    @ObservationIgnored private var stemWaveformLoads: Set<UUID> = []
+    @ObservationIgnored private var separateQueue: [UUID] = []
+    @ObservationIgnored private var separators = 0
+    @ObservationIgnored private var separateTasks: [UUID: Task<SeparationOutcome, Never>] = [:]
+    @ObservationIgnored private var separationWaiters: [UUID: [(Bool) -> Void]] = [:]
+    /// Tracks whose separation failed this session.
+    @ObservationIgnored private var unseparable: Set<UUID> = []
+    /// The network, loaded for a round of separations and let go after.
+    @ObservationIgnored private let separatorModel = SeparatorModel()
     /// Every shift a clip in either session plays. Set by the owner, which
     /// knows the sessions. Clicking + three times wants +3 only: +1 and +2
     /// are dropped from the queue, or stopped if already rendering.
@@ -125,11 +148,21 @@ final class Library {
     /// Rendering a shift takes the cores' worth of one track for a second or
     /// two; one at a time leaves room for playback and decoding.
     private static let maxShifters = 1
+    /// Separating takes the GPU and a gigabyte of memory for a few seconds.
+    private static let maxSeparators = 1
 
-    /// One track at one pitch shift.
+    /// One track at one pitch shift - or, with `stems`, its three stems
+    /// there, decoded (at none) or shifted.
     struct ShiftKey: Hashable, Sendable {
         var track: UUID
         var pitch: PitchShift
+        var stems = false
+    }
+
+    private enum SeparationOutcome: Sendable {
+        case separated(frames: Int, waveforms: [Waveform])
+        case cancelled
+        case failed(String)
     }
 
     private enum ShiftOutcome: Sendable {
@@ -170,6 +203,11 @@ final class Library {
         cacheFill = nil
         decodeQueue.removeAll()
         shiftQueue.removeAll()
+        separateQueue.removeAll()
+        for task in separateTasks.values { task.cancel() }
+        let waitingSeparations = separationWaiters
+        separationWaiters.removeAll()
+        for done in waitingSeparations.values.joined() { done(false) }
         let waiting = waiters
         waiters.removeAll()
         for done in waiting.values.joined() { done(nil) }
@@ -278,17 +316,24 @@ final class Library {
     /// when the mix asks again after the decode.
     func prepareShifts(_ keys: some Sequence<ShiftKey>, first: Bool = false) {
         var missingAudio: [UUID] = []
-        for key in keys where !key.pitch.isNone {
+        var unseparated: [UUID] = []
+        for key in keys where !key.pitch.isNone || key.stems {
             guard track(key.track) != nil, !unshiftable.contains(key) else {
                 serveShift(key, nil)
                 continue
             }
-            if shiftedFrames[key] != nil || FileManager.default.fileExists(atPath: shiftedURL(key).path) {
-                if shiftWaiters[key] != nil { serveShift(key, audio(for: key.track, pitch: key.pitch)) }
+            if isRendered(key) {
+                if shiftWaiters[key] != nil { serveShift(key, rendered(key)) }
                 continue
             }
             guard audio(for: key.track) != nil else {
                 missingAudio.append(key.track)
+                continue
+            }
+            // Stems come from the stored ones; without those, separation
+            // first, and the stems are asked for again when it is done.
+            if key.stems && !hasStems(key.track) {
+                unseparated.append(key.track)
                 continue
             }
             if shifting.contains(key) {
@@ -302,8 +347,25 @@ final class Library {
             if first { shiftQueue.insert(key, at: 0) } else { shiftQueue.append(key) }
         }
         if !missingAudio.isEmpty { prepare(missingAudio, first: first) }
+        if !unseparated.isEmpty { separate(unseparated) }
         dropUnwantedShifts()
         pumpShifts()
+    }
+
+    /// Whether a shift's file - or a stems key's three - are in the cache.
+    private func isRendered(_ key: ShiftKey) -> Bool {
+        guard key.stems else {
+            return shiftedFrames[key] != nil || FileManager.default.fileExists(atPath: shiftedURL(key).path)
+        }
+        return stemFrames[key] != nil || Stem.stored.allSatisfy {
+            FileManager.default.fileExists(atPath: stemCacheURL(key.track, $0, key.pitch).path)
+        }
+    }
+
+    /// What a waiter for `key` is handed: the shifted song, or for stems
+    /// the drums - something, as a sign they are all there.
+    private func rendered(_ key: ShiftKey) -> AudioFrames? {
+        key.stems ? stems(for: key.track, pitch: key.pitch)?.drums : audio(for: key.track, pitch: key.pitch)
     }
 
     /// Forgets queued shifts no clip plays any more and stops renders of
@@ -319,13 +381,13 @@ final class Library {
     /// Waits until every one of these shifts is rendered; returns those that
     /// could not be.
     func readyShifts(_ keys: Set<ShiftKey>) async -> [ShiftKey] {
-        let wanted = keys.filter { !$0.pitch.isNone }
+        let wanted = keys.filter { !$0.pitch.isNone || $0.stems }
         // The plain audio first: a shift is rendered from it.
         let undecoded = Set(await ready(Set(wanted.map(\.track))))
         var missing = wanted.filter { undecoded.contains($0.track) }
         for key in wanted where !undecoded.contains(key.track) {
             let audio = await withCheckedContinuation { continuation in
-                if let audio = self.audio(for: key.track, pitch: key.pitch) {
+                if let audio = self.rendered(key) {
                     continuation.resume(returning: Optional(audio))
                 } else {
                     shiftWaiters[key, default: []].append { continuation.resume(returning: $0) }
@@ -352,10 +414,29 @@ final class Library {
                 continue
             }
             let destination = shiftedURL(key)
+            let stems = Stem.stored.map {
+                (stored: storedStemURL(key.track, $0), plain: stemCacheURL(key.track, $0, .none),
+                 shifted: stemCacheURL(key.track, $0, key.pitch))
+            }
             shifters += 1
             let work = Task.detached(priority: .userInitiated) { () -> ShiftOutcome in
-                guard !FileManager.default.fileExists(atPath: destination.path) else { return .rendered }
                 do {
+                    if key.stems {
+                        // Each stem decoded from the stored one if the cache
+                        // lost it, then shifted like the song.
+                        for stem in stems {
+                            try Task.checkCancellation()
+                            if !FileManager.default.fileExists(atPath: stem.plain.path) {
+                                try AudioCache.decode(stem.stored, to: stem.plain)
+                            }
+                            if !key.pitch.isNone && !FileManager.default.fileExists(atPath: stem.shifted.path) {
+                                try KeyShifter.render(try AudioFrames(mapping: stem.plain), semitones: key.pitch.amount,
+                                                      to: stem.shifted)
+                            }
+                        }
+                        return .rendered
+                    }
+                    guard !FileManager.default.fileExists(atPath: destination.path) else { return .rendered }
                     try KeyShifter.render(source, semitones: key.pitch.amount, to: destination)
                     return .rendered
                 } catch is CancellationError {
@@ -376,11 +457,13 @@ final class Library {
                     pumpShifts()
                     return
                 }
-                let shifted = track(key.track) == nil ? nil : audio(for: key.track, pitch: key.pitch)
+                let shifted = track(key.track) == nil ? nil : rendered(key)
                 if shifted == nil {
                     unshiftable.insert(key)
                     if case .failed(let failure) = outcome, let track = track(key.track) {
-                        lastError = "“\(track.displayName)” could not be shifted by \(key.pitch.label): \(failure)"
+                        lastError = key.stems
+                            ? "The stems of “\(track.displayName)” could not be prepared: \(failure)"
+                            : "“\(track.displayName)” could not be shifted by \(key.pitch.label): \(failure)"
                     }
                 }
                 serveShift(key, shifted)
@@ -395,20 +478,21 @@ final class Library {
         cacheDirectory.appendingPathComponent(CacheSweep.shiftedName(key.track, pitch: key.pitch))
     }
 
-    /// The key-shift files in the cache, by track.
+    /// The key-shift files and decoded stems in the cache, by track.
     private func shiftedFiles() -> [UUID: [URL]] {
         guard let names = try? FileManager.default.contentsOfDirectory(atPath: cacheDirectory.path) else { return [:] }
         var files: [UUID: [URL]] = [:]
-        for name in names {
-            guard let shift = CacheSweep.shift(in: name) else { continue }
-            files[shift.id, default: []].append(cacheDirectory.appendingPathComponent(name))
+        for name in names where name.hasSuffix(".f32") {
+            guard let id = CacheSweep.shift(in: name)?.id ?? CacheSweep.stem(in: name)?.id else { continue }
+            files[id, default: []].append(cacheDirectory.appendingPathComponent(name))
         }
         return files
     }
 
-    /// Lets go of a track's shifts and deletes their files.
+    /// Lets go of a track's shifts and decoded stems and deletes their files.
     private func removeShifts(of id: UUID, files: [URL]) {
         for key in shiftedFrames.keys where key.track == id { shiftedFrames[key] = nil }
+        for key in stemFrames.keys where key.track == id { stemFrames[key] = nil }
         for url in files { try? FileManager.default.removeItem(at: url) }
     }
 
@@ -489,6 +573,7 @@ final class Library {
                                                  lastUse: values?.contentModificationDate ?? .distantPast))
         }
         let pinned = pinnedTracks().union(decoding).union(busy).union(queue).union(shifting.map(\.track))
+            .union(separating.keys)
         for id in AudioCacheLimit.evictions(entries, limit: cacheLimit, keeping: pinned) {
             // A mapping already handed out stays valid; the space comes back
             // when the last one is let go.
@@ -497,6 +582,255 @@ final class Library {
             try? FileManager.default.removeItem(at: cacheURL(id))
             removeShifts(of: id, files: shifts[id] ?? [])
         }
+    }
+
+    // MARK: - Stems
+
+    /// The track's three stems at a pitch, decoded (and shifted) in the
+    /// cache, if they are all there. Nil does not start anything;
+    /// `prepareShifts` with a stems key does.
+    func stems(for id: UUID, pitch: PitchShift) -> StemAudio? {
+        _ = shifting
+        _ = separating
+        guard track(id)?.stems?.isCurrent == true else { return nil }
+        let key = ShiftKey(track: id, pitch: pitch, stems: true)
+        if let loaded = stemFrames[key] { return loaded }
+        let mapped = Stem.stored.compactMap { try? AudioFrames(mapping: stemCacheURL(id, $0, pitch)) }
+        guard mapped.count == 3 else { return nil }
+        let audio = StemAudio(drums: mapped[0], bass: mapped[1], vocals: mapped[2])
+        stemFrames[key] = audio
+        return audio
+    }
+
+    /// Whether the track has stored stems this separator made, from the song
+    /// as it decodes now.
+    func hasStems(_ id: UUID) -> Bool {
+        guard let stems = track(id)?.stems, stems.isCurrent,
+              Stem.stored.allSatisfy({ FileManager.default.fileExists(atPath: storedStemURL(id, $0).path) }) else {
+            return false
+        }
+        // Decoded again into a different length, the song no longer lines up.
+        if let audio = audio(for: id), audio.frameCount != stems.frames { return false }
+        return true
+    }
+
+    /// Separates, in the background, the tracks that have no stems yet. A
+    /// track without decoded audio is decoded first.
+    func separate(_ ids: some Sequence<UUID>) {
+        for id in ids {
+            guard track(id) != nil, !unseparable.contains(id), separating[id] == nil else { continue }
+            if hasStems(id) {
+                serveSeparation(id, true)
+                continue
+            }
+            separating[id] = 0
+            separateQueue.append(id)
+        }
+        pumpSeparations()
+    }
+
+    /// Stops a track's separation, queued or running; nothing is kept.
+    func cancelSeparation(_ id: UUID) {
+        separateQueue.removeAll { $0 == id }
+        if let task = separateTasks[id] {
+            task.cancel()
+        } else if separating.removeValue(forKey: id) != nil {
+            serveSeparation(id, false)
+        }
+    }
+
+    /// Deletes a track's stems - the stored ones and the cache's - for the
+    /// space. A clip that wants them separates it again.
+    func deleteStems(_ id: UUID) {
+        cancelSeparation(id)
+        removeStemFiles(of: id)
+        if let i = index[id], tracks[i].stems != nil {
+            tracks[i].stems = nil
+            save()
+        }
+        onTrackChange?(id)
+    }
+
+    /// Waits until every one of these tracks is separated; returns those
+    /// that could not be.
+    func readySeparations(_ ids: Set<UUID>) async -> [UUID] {
+        var missing: [UUID] = []
+        for id in ids {
+            let done = await withCheckedContinuation { continuation in
+                if hasStems(id) {
+                    continuation.resume(returning: true)
+                } else {
+                    separationWaiters[id, default: []].append { continuation.resume(returning: $0) }
+                    separate([id])
+                }
+            }
+            if !done { missing.append(id) }
+        }
+        return missing
+    }
+
+    private func serveSeparation(_ id: UUID, _ done: Bool) {
+        guard let waiting = separationWaiters.removeValue(forKey: id) else { return }
+        for finish in waiting { finish(done) }
+    }
+
+    private func pumpSeparations() {
+        while separators < Self.maxSeparators, !separateQueue.isEmpty {
+            let id = separateQueue.removeFirst()
+            guard track(id) != nil else {
+                separating[id] = nil
+                serveSeparation(id, false)
+                continue
+            }
+            guard let source = audio(for: id) else {
+                // Decoded first; it comes back to the front of the queue.
+                whenReady(id) { [weak self] audio in
+                    guard let self, self.separating[id] != nil else { return }
+                    if audio == nil {
+                        self.finishSeparation(id, .failed("its audio could not be decoded"))
+                    } else {
+                        self.separateQueue.insert(id, at: 0)
+                        self.pumpSeparations()
+                    }
+                }
+                continue
+            }
+            // Stems from an earlier separation, decoded or shifted, are of
+            // the old ones.
+            removeStemFiles(of: id, keepStored: true)
+            let stored = Stem.stored.map { storedStemURL(id, $0) }
+            let cached = Stem.stored.map { stemCacheURL(id, $0, .none) }
+            let waves = Stem.allCases.map { stemWaveformURL(id, $0) }
+            let holder = separatorModel
+            // Held only while the separation runs, as long as the library.
+            let report: @Sendable (Double) -> Void = { fraction in
+                Task { @MainActor in
+                    if self.separating[id] != nil { self.separating[id] = fraction }
+                }
+            }
+            separators += 1
+            let work = Task.detached(priority: .utility) { () -> SeparationOutcome in
+                do {
+                    let model = try holder.model()
+                    let writers = try stored.map { try StemWriter(to: $0) }
+                    do {
+                        try StemSeparator.separate(source, model: model, progress: report) { stem, left, right, count in
+                            try writers[stem].write(left: left, right: right, count: count)
+                        }
+                        for writer in writers { try writer.finish() }
+                    } catch {
+                        for writer in writers { writer.cancel() }
+                        throw error
+                    }
+                    for (from, to) in zip(stored, cached) { try AudioCache.decode(from, to: to) }
+                    let decoded = try cached.map { try AudioFrames(mapping: $0) }
+                    let waveforms = Waveform.stems(song: source, StemAudio(drums: decoded[0], bass: decoded[1], vocals: decoded[2]))
+                    for (waveform, url) in zip(waveforms, waves) { try? waveform.data().write(to: url) }
+                    return .separated(frames: source.frameCount, waveforms: waveforms)
+                } catch is CancellationError {
+                    return .cancelled
+                } catch {
+                    return .failed(error.localizedDescription)
+                }
+            }
+            separateTasks[id] = work
+            Task {
+                let outcome = await work.value
+                separateTasks[id] = nil
+                separators -= 1
+                finishSeparation(id, outcome)
+                if separateQueue.isEmpty && separators == 0 { separatorModel.release() }
+                pumpSeparations()
+            }
+        }
+        if separateQueue.isEmpty && separators == 0 { separatorModel.release() }
+    }
+
+    private func finishSeparation(_ id: UUID, _ outcome: SeparationOutcome) {
+        separating[id] = nil
+        guard let i = index[id] else {
+            // Removed while it was being separated.
+            removeStemFiles(of: id)
+            serveSeparation(id, false)
+            return
+        }
+        switch outcome {
+        case .separated(let frames, let waveforms):
+            tracks[i].stems = TrackStems(tag: StemSeparator.tag, frames: frames)
+            stemWaveforms[id] = waveforms
+            save()
+            serveSeparation(id, true)
+            enforceCacheLimit()
+            onTrackChange?(id)
+            // Stems a bounce waits for, at a pitch, can be made now.
+            let waiting = shiftWaiters.keys.filter { $0.track == id && $0.stems }
+            if !waiting.isEmpty { prepareShifts(waiting, first: true) }
+        case .cancelled:
+            removeStemFiles(of: id, keepStored: tracks[i].stems?.isCurrent == true)
+            serveSeparation(id, false)
+        case .failed(let failure):
+            unseparable.insert(id)
+            lastError = "“\(tracks[i].displayName)” could not be separated into stems: \(failure)"
+            serveSeparation(id, false)
+            for key in shiftWaiters.keys where key.track == id && key.stems { serveShift(key, nil) }
+        }
+    }
+
+    /// A track's stems in the cache, at every pitch, and unless
+    /// `keepStored` the stored ones too.
+    private func removeStemFiles(of id: UUID, keepStored: Bool = false) {
+        for key in stemFrames.keys where key.track == id { stemFrames[key] = nil }
+        stemWaveforms[id] = nil
+        if let names = try? FileManager.default.contentsOfDirectory(atPath: cacheDirectory.path) {
+            for name in names where CacheSweep.stem(in: name)?.id == id {
+                try? FileManager.default.removeItem(at: cacheDirectory.appendingPathComponent(name))
+            }
+        }
+        guard !keepStored else { return }
+        for stem in Stem.stored { try? FileManager.default.removeItem(at: storedStemURL(id, stem)) }
+    }
+
+    /// Loads, or builds, the stems' waveforms of tracks that have stems, in
+    /// the background; published in `stemWaveforms`. Built from the decoded
+    /// stems; where the size limit took those, they are decoded first, and
+    /// the next call - the mix rebuilds when they are back - builds them.
+    func prepareStemWaveforms(_ ids: some Sequence<UUID>) {
+        for id in Set(ids) where stemWaveforms[id] == nil && !stemWaveformLoads.contains(id) && hasStems(id) {
+            let waves = Stem.allCases.map { stemWaveformURL(id, $0) }
+            let stored = waves.allSatisfy { FileManager.default.fileExists(atPath: $0.path) }
+            let song = audio(for: id), parts = stems(for: id, pitch: .none)
+            guard stored || (song != nil && parts != nil) else {
+                if song == nil { prepare([id]) } else { prepareShifts([ShiftKey(track: id, pitch: .none, stems: true)]) }
+                continue
+            }
+            stemWaveformLoads.insert(id)
+            Task {
+                let waveforms = await Task.detached(priority: .utility) { () -> [Waveform]? in
+                    if stored {
+                        let read = waves.compactMap { (try? Data(contentsOf: $0)).flatMap(Waveform.init(data:)) }
+                        if read.count == waves.count { return read }
+                    }
+                    guard let song, let parts else { return nil }
+                    let built = Waveform.stems(song: song, parts)
+                    for (waveform, url) in zip(built, waves) { try? waveform.data().write(to: url) }
+                    return built
+                }.value
+                stemWaveformLoads.remove(id)
+                if let waveforms, track(id)?.stems?.isCurrent == true { stemWaveforms[id] = waveforms }
+            }
+        }
+    }
+
+    private func stemWaveformURL(_ id: UUID, _ stem: Stem) -> URL {
+        cacheDirectory.appendingPathComponent(StemFiles.waveformName(id, stem))
+    }
+
+    private func storedStemURL(_ id: UUID, _ stem: Stem) -> URL {
+        workspace.stems.appendingPathComponent(StemFiles.storedName(id, stem))
+    }
+
+    private func stemCacheURL(_ id: UUID, _ stem: Stem, _ pitch: PitchShift) -> URL {
+        cacheDirectory.appendingPathComponent(StemFiles.cachedName(id, stem, pitch: pitch))
     }
 
     private func cacheURL(_ id: UUID) -> URL { cacheDirectory.appendingPathComponent("\(id.uuidString).f32") }
@@ -586,7 +920,9 @@ final class Library {
         tracks.removeAll { ids.contains($0.id) }
         let shifts = shiftedFiles()
         for track in removed {
+            cancelSeparation(track.id)
             removeShifts(of: track.id, files: shifts[track.id] ?? [])
+            for stem in Stem.stored { try? FileManager.default.removeItem(at: storedStemURL(track.id, stem)) }
             frames[track.id] = nil
             serve(track.id, nil)
             waveforms[track.id] = nil
@@ -1277,6 +1613,11 @@ final class Library {
                 try? files.removeItem(at: cacheDirectory.appendingPathComponent(name))
             }
         }
+        if let names = try? files.contentsOfDirectory(atPath: workspace.stems.path) {
+            for name in CacheSweep.stemOrphans(among: names, keeping: Set(tracks.map(\.id))) {
+                try? files.removeItem(at: workspace.stems.appendingPathComponent(name))
+            }
+        }
         if let names = try? files.contentsOfDirectory(atPath: workspace.audio.path) {
             for name in names where name.hasPrefix(".") && name.hasSuffix(".partial") {
                 try? files.removeItem(at: workspace.audio.appendingPathComponent(name))
@@ -1291,5 +1632,26 @@ final class Library {
         } catch {
             lastError = "The library could not be saved: \(error.localizedDescription)"
         }
+    }
+}
+
+/// The Demucs network for a round of separations: loaded by the first,
+/// kept while more are queued, let go when the queue is empty - it holds
+/// about a gigabyte while loaded.
+private nonisolated final class SeparatorModel: @unchecked Sendable {
+    private let lock = NSLock()
+    private var loaded: DemucsModel?
+
+    func model() throws -> DemucsModel {
+        try lock.withLock {
+            if let loaded { return loaded }
+            let model = try DemucsModel.bundled()
+            loaded = model
+            return model
+        }
+    }
+
+    func release() {
+        lock.withLock { loaded = nil }
     }
 }

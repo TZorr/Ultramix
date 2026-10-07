@@ -87,12 +87,18 @@ final class AppModel {
                 session?.rebuild()
                 live?.rebuild()
             }
-            // The pitch shifts worth rendering: those either session plays.
+            // The pitch shifts worth rendering, and stems worth preparing:
+            // those either session plays.
             library.wantedShifts = { [weak session, weak live] in
                 var wanted = Set<Library.ShiftKey>()
                 for s in [session, live].compactMap({ $0 }) {
-                    for clip in s.document.clips where !clip.pitch.isNone {
-                        wanted.insert(Library.ShiftKey(track: clip.trackID, pitch: clip.pitch))
+                    for clip in s.document.clips {
+                        if !clip.pitch.isNone {
+                            wanted.insert(Library.ShiftKey(track: clip.trackID, pitch: clip.pitch))
+                        }
+                        if clip.parts.playsStems {
+                            wanted.insert(Library.ShiftKey(track: clip.trackID, pitch: clip.pitch, stems: true))
+                        }
                     }
                 }
                 return wanted

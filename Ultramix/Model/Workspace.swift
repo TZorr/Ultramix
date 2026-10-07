@@ -9,6 +9,7 @@
 //      Audio/                  copies of the imported songs
 //      Mixes/                  .ultramix files
 //      Bounces/                WAV and MP3 exports
+//      Stems/                  separated stems, kept (Stems.swift)
 //      Cache/                  decoded audio and waveforms, rebuilt on demand
 //
 //  Paths are stored relative to the folder, never absolute: a drive mounts
@@ -28,14 +29,15 @@ nonisolated struct Workspace: Sendable, Equatable {
     var audio: URL { root.appendingPathComponent("Audio", isDirectory: true) }
     var mixes: URL { root.appendingPathComponent("Mixes", isDirectory: true) }
     var bounces: URL { root.appendingPathComponent("Bounces", isDirectory: true) }
+    var stems: URL { root.appendingPathComponent("Stems", isDirectory: true) }
     var cache: URL { root.appendingPathComponent("Cache", isDirectory: true) }
 
-    /// Makes `root` a working directory: creates whichever of the four
+    /// Makes `root` a working directory: creates whichever of the five
     /// folders are missing. Never deletes or overwrites anything, so opening
     /// an existing working directory again is harmless.
     static func prepare(at root: URL) throws -> Workspace {
         let workspace = Workspace(root: root.standardizedFileURL)
-        for folder in [workspace.audio, workspace.mixes, workspace.bounces, workspace.cache] {
+        for folder in [workspace.audio, workspace.mixes, workspace.bounces, workspace.stems, workspace.cache] {
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         }
         return workspace

@@ -100,9 +100,13 @@ struct TimelineLayout {
     /// lane or finds one under the pointer goes through here, so drawing,
     /// hits and drops follow the order together.
     var laneOrder: [Int] = Array(0..<Clip.laneCount)
+    /// The lanes shown with a row per stem under each clip (LaneGeometry).
+    var expanded: Set<Int> = []
 
-    var laneHeight: CGFloat {
-        max(44, (size.height - Self.lanesTop) / CGFloat(Clip.laneCount))
+    /// Each row's height, top to bottom.
+    private var heights: [CGFloat] {
+        LaneGeometry.heights(total: Double(size.height - Self.lanesTop), expanded: laneOrder.map { expanded.contains($0) })
+            .map { CGFloat($0) }
     }
 
     var transitionRect: CGRect {
@@ -122,15 +126,37 @@ struct TimelineLayout {
 
     func laneRect(_ lane: Int) -> CGRect {
         let row = laneOrder.firstIndex(of: lane) ?? lane
-        return CGRect(x: 0, y: Self.lanesTop + CGFloat(row) * laneHeight,
-                      width: size.width, height: laneHeight)
+        let heights = heights
+        let top = heights.prefix(row).reduce(Self.lanesTop, +)
+        return CGRect(x: 0, y: top, width: size.width, height: row < heights.count ? heights[row] : 0)
     }
 
     func lane(atY y: CGFloat) -> Int? {
-        let offset = y - Self.lanesTop
-        guard offset >= 0 else { return nil }
-        let row = Int(offset / laneHeight)
-        return row < laneOrder.count ? laneOrder[row] : nil
+        guard y >= Self.lanesTop else { return nil }
+        var top = Self.lanesTop
+        for (row, height) in heights.enumerated() {
+            if y < top + height { return laneOrder[row] }
+            top += height
+        }
+        return nil
+    }
+
+    /// One row of a lane: the clip's own (`part` nil) - the whole lane when
+    /// it is not expanded - or a stem's under it.
+    func rowRect(_ lane: Int, part: Stem?) -> CGRect {
+        let rect = laneRect(lane)
+        guard expanded.contains(lane) else { return rect }
+        let rows = LaneGeometry.rows(laneHeight: Double(rect.height))
+        let clip = CGFloat(rows.clip), stem = CGFloat(rows.stem)
+        guard let part else { return CGRect(x: rect.minX, y: rect.minY, width: rect.width, height: clip) }
+        return CGRect(x: rect.minX, y: rect.minY + clip + CGFloat(part.rawValue) * stem, width: rect.width, height: stem)
+    }
+
+    /// The stem whose row holds `y` in an expanded lane; nil in the clip's
+    /// row, or in a lane that is not expanded.
+    func part(atY y: CGFloat, lane: Int) -> Stem? {
+        guard expanded.contains(lane) else { return nil }
+        return Stem.allCases.first { rowRect(lane, part: $0).minY <= y && y < rowRect(lane, part: $0).maxY }
     }
 
     func x(_ beat: Double) -> CGFloat {
@@ -158,12 +184,14 @@ struct TimelineLayout {
 
     // MARK: - Automation values
 
-    private func valueBox(_ lane: Int) -> CGRect {
-        laneRect(lane).insetBy(dx: 0, dy: 10)
+    /// Where a row's automation values run: the row, less a margin - a
+    /// smaller one in a stem's thin row.
+    private func valueBox(_ lane: Int, _ part: Stem?) -> CGRect {
+        rowRect(lane, part: part).insetBy(dx: 0, dy: part == nil ? 10 : 3)
     }
 
-    func y(value: Double, kind: AutomationKind, lane: Int) -> CGFloat {
-        let box = valueBox(lane)
+    func y(value: Double, kind: AutomationKind, lane: Int, part: Stem? = nil) -> CGFloat {
+        let box = valueBox(lane, part)
         let unit: Double
         switch kind {
         case .volume: unit = Automation.faderTravel(dB: value)
@@ -177,8 +205,8 @@ struct TimelineLayout {
     /// place of each kind - unity volume, centre pan, a filter out (the top
     /// of a low-pass lane, the bottom of a high-pass one) - so the
     /// hand can find it without aiming.
-    func value(atY y: CGFloat, kind: AutomationKind, lane: Int) -> Double {
-        let box = valueBox(lane)
+    func value(atY y: CGFloat, kind: AutomationKind, lane: Int, part: Stem? = nil) -> Double {
+        let box = valueBox(lane, part)
         let unit = Double(min(max((box.maxY - y) / box.height, 0), 1))
         switch kind {
         case .volume:
@@ -196,8 +224,9 @@ struct TimelineLayout {
     /// The values between two heights in a lane, lowest first - exactly,
     /// without the detents and rounding of `value(atY:)`, which would move
     /// a selection rectangle's edges. The bottom of a volume lane is silence.
-    func valueRange(fromY a: CGFloat, toY b: CGFloat, kind: AutomationKind, lane: Int) -> ClosedRange<Double> {
-        let box = valueBox(lane)
+    func valueRange(fromY a: CGFloat, toY b: CGFloat, kind: AutomationKind, lane: Int,
+                    part: Stem? = nil) -> ClosedRange<Double> {
+        let box = valueBox(lane, part)
         func value(_ y: CGFloat) -> Double {
             let unit = Double(min(max((box.maxY - y) / box.height, 0), 1))
             switch kind {

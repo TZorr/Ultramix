@@ -212,7 +212,7 @@ struct MixCommands: Commands {
                     .keyboardShortcut("d")
                 Button("Loop") { session?.toggleLoopSelection() }
                     .keyboardShortcut("l")
-                Button("Mute Clip") { session?.toggleMuteSelection() }
+                Button(session?.selectedPart != nil ? "Mute Stem" : "Mute Clip") { session?.toggleMuteSelection() }
                     .keyboardShortcut("m", modifiers: [.command, .control])
                 Divider()
                 Button("Delete") { session?.deleteSelection() }

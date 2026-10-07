@@ -305,12 +305,15 @@ nonisolated struct LaneSettings: Codable, Sendable, Equatable {
 
 // MARK: - Selection
 
-/// Automation picked out on the timeline - one kind at a time, on any
+/// Automation picked out on the timeline - one kind and one row at a time, on any
 /// number of clips, keyed by clip id; nodes as stored, in clip-local beats.
 /// Nodes have no identity of their own and are matched by value; two nodes
 /// identical in beat and value are interchangeable anyway.
 nonisolated struct AutomationSelection: Equatable, Sendable {
     var kind: AutomationKind
+    /// Whose automation: the clips' own, or one stem's (an expanded lane's
+    /// row). A rectangle stays in one row.
+    var part: Stem? = nil
     var nodes: [UUID: [AutomationNode]] = [:]
     var gestures: [UUID: Set<UUID>] = [:]
 

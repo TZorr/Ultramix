@@ -39,7 +39,11 @@ nonisolated struct MixDocument: Codable, Sendable, Equatable {
     /// 3: the bipolar filter became a low-pass and a high-pass (`lpf`,
     /// `hpf`). A v2 build would drop both and fail on their gestures. A v2
     /// mix still opens here without its filter. No migration.
-    static let formatVersion = 3
+    ///
+    /// 4: clips hold their stems (`parts`), each with its own level, mute
+    /// and automation. A v3 build would drop them and could save over the
+    /// mix without them. A v3 mix opens here as it always did.
+    static let formatVersion = 4
 
     /// The tempo at beat 0, until a clip's target says otherwise. Set from
     /// the first track placed, so a new mix starts at that track's tempo

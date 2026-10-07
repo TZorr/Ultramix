@@ -65,8 +65,8 @@ nonisolated struct Clip: Identifiable, Codable, Sendable, Equatable {
     var muted: Bool
     /// A locked clip keeps its place: it cannot be dragged, nudged or moved
     /// to another lane, and its automation cannot be changed - by hand, by
-    /// a transition or by a beatmix. Trim, gain, tempo, loop, mute, split
-    /// and delete still work.
+    /// a transition or by a beatmix. Trim, gain, stem levels, tempo, loop,
+    /// mute, split and delete still work.
     var locked: Bool
     /// A level change for the whole clip, in whole dB; 0 plays the file as
     /// it is.
@@ -83,6 +83,10 @@ nonisolated struct Clip: Identifiable, Codable, Sendable, Equatable {
     /// record that is a little off concert pitch. Rendered together with the
     /// key shift (PitchShift).
     var fineTune: Int
+    /// The track's four stems in this clip, each with its own level, mute and
+    /// automation (Stems.swift) - the rows of an expanded lane. All neutral,
+    /// the clip plays its own audio, and its track is never separated for it.
+    var parts: ClipParts
     /// Volume, pan and filter drawn on the clip, in clip-local beats
     /// (timeline beat − `anchorBeat`). Moves, copies and deletes with the
     /// clip; what a trim hides stays here, silent, until the clip is
@@ -93,7 +97,7 @@ nonisolated struct Clip: Identifiable, Codable, Sendable, Equatable {
          targetBPM: Double? = nil, rampStartBeat: Int? = nil, trimStart: Double = 0, trimEnd: Double = 0,
          looping: Bool = false, loopLead: Double = 0, loopTail: Double = 0, muted: Bool = false,
          locked: Bool = false, gainDB: Double = 0, keyShift: Int = 0, fineTune: Int = 0,
-         automation: ClipAutomation = ClipAutomation()) {
+         parts: ClipParts = ClipParts(), automation: ClipAutomation = ClipAutomation()) {
         self.id = id
         self.trackID = trackID
         self.lane = lane
@@ -111,16 +115,20 @@ nonisolated struct Clip: Identifiable, Codable, Sendable, Equatable {
         self.gainDB = gainDB
         self.keyShift = keyShift
         self.fineTune = fineTune
+        self.parts = parts
         self.automation = automation
     }
 
     enum CodingKeys: String, CodingKey {
         case id, trackID, lane, anchorBeat, tempoAnchorBeat, targetBPM, rampStartBeat
-        case trimStart, trimEnd, looping, loopLead, loopTail, muted, locked, gainDB, keyShift, fineTune, automation
+        case trimStart, trimEnd, looping, loopLead, loopTail, muted, locked, gainDB, keyShift, fineTune, parts
+        /// Read only: the stem levels before stems had automation.
+        case stems
+        case automation
     }
 
-    /// Written by hand so that a gain of 0, no pitch shift and an empty
-    /// automation leave no key: a clip that never used them saves exactly as
+    /// Written by hand so that a gain of 0, no pitch shift, neutral stems and
+    /// an empty automation leave no key: a clip that never used them saves exactly as
     /// it did before.
     func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
@@ -141,6 +149,7 @@ nonisolated struct Clip: Identifiable, Codable, Sendable, Equatable {
         if gainDB != 0 { try c.encode(gainDB, forKey: .gainDB) }
         if keyShift != 0 { try c.encode(keyShift, forKey: .keyShift) }
         if fineTune != 0 { try c.encode(fineTune, forKey: .fineTune) }
+        if !parts.isNeutral { try c.encode(parts, forKey: .parts) }
         if !automation.isEmpty { try c.encode(automation, forKey: .automation) }
     }
 
@@ -167,6 +176,9 @@ nonisolated struct Clip: Identifiable, Codable, Sendable, Equatable {
         let shift = try c.decodeIfPresent(Int.self, forKey: .keyShift) ?? 0
         keyShift = min(max(shift, Self.keyShiftRange.lowerBound), Self.keyShiftRange.upperBound)
         fineTune = Self.heldFineTune(try c.decodeIfPresent(Int.self, forKey: .fineTune) ?? 0)
+        // `stems` held the levels and mutes alone, in the same shape.
+        parts = (try? c.decodeIfPresent(ClipParts.self, forKey: .parts))
+            ?? (try? c.decodeIfPresent(ClipParts.self, forKey: .stems)) ?? ClipParts()
         automation = try c.decodeIfPresent(ClipAutomation.self, forKey: .automation) ?? ClipAutomation()
     }
 
