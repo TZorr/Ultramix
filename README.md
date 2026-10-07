@@ -100,6 +100,17 @@ unless you ask it to.
   once in the background, a second or two per song, with a Swift port of
   Signalsmith Stretch, and kept in the cache; until it is ready the clip plays
   unshifted, and a bounce waits for it.
+- **Stems** — the arrow beside M and S expands a lane: under each clip a row
+  each for its drums, bass, vocals and everything else, with the stem's own
+  waveform. Every automation tool works in a stem row as in the clip's own -
+  a fade on the vocals alone, a low-pass on the drums, pan on the bass - and
+  picked on a stem row, Gain and Mute (and **M**) work on that stem; the
+  clip's own row works on the four together. Where the clip sits, its length,
+  tempo and key stay the clip's, so the stems always add up to the song. A
+  song is separated only when you ask - a click in a clip's stem rows, or
+  right-click › Separate Stems - with Demucs v4 as a Core ML model, a few
+  seconds a song, once, and the stems are kept in the working directory. A
+  bounce separates what it needs first.
 - **Transition bars** — every transition and beatmix gets a bar in a strip
   under the ruler, like a cycle range in a DAW. Drag its ends or the whole bar
   and the transition is written again there; right-click for another style;
@@ -141,6 +152,7 @@ changes it later.
   Audio/                  copies of the imported songs
   Mixes/                  saved mixes (.ultramix)
   Bounces/                WAV and MP3 exports
+  Stems/                  separated stems (Apple Lossless), kept
   Cache/                  decoded audio, key shifts, waveforms — safe to delete
 ```
 
@@ -162,6 +174,12 @@ again — in under a second — when a mix, the live set or the library needs
 it. Songs in the open mix and live set are always kept. A clip with a key
 shift adds a rendered copy of its song, the same size; it counts towards the
 limit with that song and goes with it.
+
+A separated song keeps its drums, bass and vocals in `Stems/` for good -
+about 10 MB per minute of music, the rest being the song less those three -
+so it is separated once. To play, they are decoded into the cache like the
+song, three times its size, and given back under the limit with it.
+Right-click › Delete Stems frees the space.
 
 On a drive with room, **Settings › Library › Keep every song decoded** takes
 the limit away: every song is decoded once and kept, so nothing is decoded and
@@ -229,11 +247,18 @@ track against its file and then asks Music to `refresh` the ones that are out
 of date. Run it without arguments to see what would change, with `--refresh`
 to do it, and with `--refresh --all` to have Music read every file again.
 
+`Tools/convert-demucs.py` makes the stem model: it converts Demucs's
+`htdemucs` weights to Core ML - the network alone, the spectrum and the
+chunking being Swift's - checks the result against PyTorch, and writes the
+reference values the verification harness holds the Swift side to. It needs
+a Python environment with PyTorch, coremltools and Demucs; the header says
+which versions.
+
 ## License
 
 Ultramix is © 2026 T'Zorr, MIT — see [LICENSE](LICENSE).
 
-It contains three third-party components, all of which keep their own
+It contains four third-party components, all of which keep their own
 licences and attributions:
 
 - **LAME** (`libmp3lame`), LGPL-2.0, used for MP3 export.
@@ -241,6 +266,8 @@ licences and attributions:
   optional neural beat analyser.
 - **Signalsmith Stretch** and the parts of **Signalsmith Linear** it runs on,
   MIT, ported to Swift for the key shift.
+- **Demucs v4** (`htdemucs` weights, Meta) as a Core ML model, MIT, used to
+  separate songs into stems.
 
 The full details, copyright holders and licence texts are in
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Keep that file with the
