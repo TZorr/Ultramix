@@ -4,7 +4,7 @@ A native macOS DJ mix editor: build a complete mix on a beat-based timeline
 before the party, hear every transition while you shape it, and bounce the
 finished set to WAV or MP3.
 
-![Ultramix: a three-lane timeline with the master tempo locked at 124 BPM and transition bars, the beatgrid editor open, and the clip bar with Key and Fine](screenshot.png)
+![Ultramix: lane A expanded into drums, bass, vocals and other rows under its clip, each with its own waveform, three clips with two crossfade bars, and the beatgrid editor open below](screenshot.png)
 
 Swift, SwiftUI and AVFoundation, Apple Silicon only.
 
