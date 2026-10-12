@@ -282,12 +282,13 @@ nonisolated struct LaneSettings: Codable, Sendable, Equatable {
     /// a mix looks the same wherever it is opened and a change is undoable.
     var color: String?
 
-    /// Each lane's own colour - blue, orange, purple, then green, pink and
-    /// gold for lanes 4 to 6 - which is what a mix that never chose one
-    /// shows. FA9933 was 2.17:1 on the light background, too faint to read;
-    /// DD7100 keeps the hue and reaches 3.26:1 there (5.11:1 on dark). All
-    /// six are held to 3:1 on both in the harness.
-    static let defaultColors = ["4294FA", "DD7100", "B870F5", "2FA866", "E0457B", "A88A1F"]
+    /// Each lane's own colour - blue-grey, olive, orange, sage, purple and
+    /// green, muted to sit together on the dark timeline - which is what a
+    /// mix that never chose one shows. Chosen by the user for the dark
+    /// appearance, Ultramix's own: all six are held to 3:1 there in the
+    /// harness (4:1 to 8.4:1). On the light background four of them fall
+    /// under 3:1 - olive is 2:1 - which is accepted, not corrected.
+    static let defaultColors = ["799CC3", "C1BA6D", "DF8B23", "88A38D", "A4679E", "528C62"]
 
     /// A lane's own colour; the list repeats past its end.
     static func defaultColor(_ lane: Int) -> String {
