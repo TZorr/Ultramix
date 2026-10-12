@@ -4,7 +4,7 @@ A native macOS DJ mix editor: build a complete mix on a beat-based timeline
 before the party, hear every transition while you shape it, and bounce the
 finished set to WAV or MP3.
 
-![Ultramix 1.5: the library as a sidebar on the left, two lanes with a crossfade bar picked and its transition in the inspector on the right, the transport and meter in the middle of the toolbar, and the beatgrid drawer open below](screenshot.png)
+![Ultramix 1.5.2: the library as a sidebar on the left, lane 1 expanded into drums, bass, vocals and other with volume curves drawn on them, a beatmix bar picked and its transition in the inspector on the right, the transport and meter in the middle of the toolbar, and the beatgrid drawer below with the waveform in grey, the kicks beside the grid as red dots and an intro warning](screenshot.png)
 
 Swift, SwiftUI and AVFoundation, Apple Silicon only.
 
