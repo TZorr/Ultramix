@@ -353,7 +353,10 @@ struct BeatgridStrip: View {
         let framesPerPixel = rate / max(layout.pixelsPerSecond, 0.0001)
         let middle = layout.waveTop + layout.waveHeight / 2
         let half = layout.waveHeight / 2 * 0.95
-        let color = Color(red: 0.45, green: 0.75, blue: 1.0)
+        // Neutral grey, not a colour: the grid's lines, bar 1 and the
+        // off-grid kicks are what the eye looks for, and they stand out
+        // better from a song that carries no hue of its own.
+        let color = Color(white: 0.68)
         if let waveform, framesPerPixel >= Self.pyramidFrom || Double(waveform.framesPerBucket) <= framesPerPixel {
             var levelIndex = 0
             while levelIndex + 1 < waveform.levels.count,
