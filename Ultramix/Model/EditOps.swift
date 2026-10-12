@@ -54,7 +54,7 @@ nonisolated extension MixDocument {
     /// Whether `clip` could stand where it is: inside the mix, long enough,
     /// and not overlapping another clip on its lane.
     func fits(_ clip: Clip, _ grids: GridLookup) -> Bool {
-        guard (0..<Clip.laneCount).contains(clip.lane),
+        guard (0..<laneCount).contains(clip.lane),
               let shape = geometry(clip, grids),
               shape.start >= -1e-9,
               shape.bodyLength >= Clip.minimumBeats - 1e-9 else { return false }
@@ -135,7 +135,7 @@ nonisolated extension MixDocument {
             lanes = [lane]
         } else {
             let last = clips.last?.lane ?? -1
-            lanes = (1...Clip.laneCount).map { (last + $0) % Clip.laneCount }
+            lanes = (1...laneCount).map { (last + $0) % laneCount }
         }
         let start = startBeat ?? max(0, endBeat(lookup) - Self.defaultOverlapBeats)
 
@@ -201,7 +201,7 @@ nonisolated extension MixDocument {
         guard let i = index(of: id), let grid = grids(clips[i].trackID) else { return }
         try checkUnlocked([clips[i]])
         var target = clips[i]
-        target.lane = min(max(lane, 0), Clip.laneCount - 1)
+        target.lane = min(max(lane, 0), laneCount - 1)
         try place(id, anchor: Self.snappedAnchor(anchorBeat, target, grid), lane: target.lane, grids: grids)
     }
 
@@ -227,8 +227,8 @@ nonisolated extension MixDocument {
         let beats = Self.snappedAnchor(anchorBeat, dragged, grid, step: step) - dragged.anchorBeat
         let lowest = moving.map(\.lane).min() ?? dragged.lane
         let highest = moving.map(\.lane).max() ?? dragged.lane
-        let wanted = min(max(lane, 0), Clip.laneCount - 1) - dragged.lane
-        let lanes = min(max(wanted, -lowest), Clip.laneCount - 1 - highest)
+        let wanted = min(max(lane, 0), laneCount - 1) - dragged.lane
+        let lanes = min(max(wanted, -lowest), laneCount - 1 - highest)
         guard beats != 0 || lanes != 0 else { return }
 
         // In the direction of travel, so that selected clips standing end to
@@ -286,7 +286,7 @@ nonisolated extension MixDocument {
         let delta = anchor - old.anchorBeat
         if delta == 0 && lane == old.lane { return }
         guard fits(clip, grids) else {
-            throw EditError("Lane \(["A", "B", "C"][lane]) is taken at that position.")
+            throw EditError("Lane \(lane + 1) is taken at that position.")
         }
         clip.tempoAnchorBeat += delta
         clip.rampStartBeat = clip.rampStartBeat.map { $0 + delta }
@@ -428,7 +428,7 @@ nonisolated extension MixDocument {
         let bar = Double(Clip.beatsPerBar)
         let step = max(Clip.beatsPerBar, Int((length / bar - 1e-9).rounded(.up)) * Clip.beatsPerBar)
         let places = [(clip.lane + 1, 0), (clip.lane - 1, 0), (clip.lane, step), (clip.lane, -step)]
-        for (lane, shift) in places where (0..<Clip.laneCount).contains(lane) {
+        for (lane, shift) in places where (0..<laneCount).contains(lane) {
             var copy = Clip(trackID: clip.trackID, lane: lane, anchorBeat: clip.anchorBeat + shift,
                             tempoAnchorBeat: clip.tempoAnchorBeat + shift, targetBPM: clip.targetBPM,
                             rampStartBeat: clip.rampStartBeat.map { $0 + shift },
@@ -739,7 +739,39 @@ nonisolated extension MixDocument {
     mutating func setLaneColor(_ lane: Int, _ hex: String?) {
         guard lanes.indices.contains(lane) else { return }
         let chosen = hex.flatMap(HexColor.normalized)
-        lanes[lane].color = chosen == LaneSettings.defaultColors[lane] ? nil : chosen
+        lanes[lane].color = chosen == LaneSettings.defaultColor(lane) ? nil : chosen
+    }
+
+    // MARK: - Lanes
+
+    /// Adds an empty lane under the others, up to `Clip.maxLanes`.
+    mutating func addLane() throws {
+        guard lanes.count < Clip.maxLanes else {
+            throw EditError("A mix has at most \(Clip.maxLanes) lanes.")
+        }
+        lanes.append(LaneSettings())
+    }
+
+    /// Whether `lane` could go: it holds no clip, and two lanes are left
+    /// after it - a beatmix needs a lane to come in on.
+    func canRemoveLane(_ lane: Int) -> Bool {
+        lanes.indices.contains(lane) && lanes.count > Clip.defaultLanes && !clips.contains { $0.lane == lane }
+    }
+
+    /// Removes an empty lane. The lanes under it move up a place, and their
+    /// clips with them - a clip belongs to its row, not to a number.
+    mutating func removeLane(_ lane: Int) throws {
+        guard lanes.indices.contains(lane) else { return }
+        guard lanes.count > Clip.defaultLanes else {
+            throw EditError("A mix keeps at least \(Clip.defaultLanes) lanes.")
+        }
+        guard !clips.contains(where: { $0.lane == lane }) else {
+            throw EditError("Lane \(lane + 1) still holds clips. Move or delete them first.")
+        }
+        lanes.remove(at: lane)
+        for i in clips.indices where clips[i].lane > lane {
+            clips[i].lane -= 1
+        }
     }
 
     // MARK: - Mute

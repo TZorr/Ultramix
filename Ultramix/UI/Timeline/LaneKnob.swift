@@ -78,7 +78,7 @@ struct LaneKnob: View {
         .accessibilityRepresentation {
             Slider(value: Binding(get: { Double(state.value) }, set: { knobs.set(slot, to: Int($0.rounded())) }),
                    in: 0...127, step: 1) {
-                Text("Lane \(LaneStyle.names[lane]) knob \(number), \(state.function.title)")
+                Text("Lane \(LaneStyle.number(lane)) knob \(number), \(state.function.title)")
             }
         }
     }
@@ -86,7 +86,7 @@ struct LaneKnob: View {
     private var help: String {
         let assignment = knobs.setup.slots[slot]
         let source = learning ? "Learn: move a control on the MIDI controller" : assignment.label
-        return "Lane \(LaneStyle.names[lane]) · Knob \(number) · \(state.function.title) · \(source)"
+        return "Lane \(LaneStyle.number(lane)) · Knob \(number) · \(state.function.title) · \(source)"
     }
 
     private func draw(_ state: KnobState, learning: Bool, in context: inout GraphicsContext, size: CGSize) {
@@ -113,7 +113,10 @@ struct LaneKnob: View {
         let fillStart = bipolar ? middle : trackStart
         let fillEnd = trackStart + trackSweep * fraction
         if abs(fillEnd - fillStart) > 0.01 {
-            context.stroke(arc(center, radius, fillStart, fillEnd), with: .color(accent),
+            // Light grey, not the accent: three lanes of lit rings drowned
+            // out the playhead. The accent is kept for MIDI Learn.
+            context.stroke(arc(center, radius, fillStart, fillEnd),
+                           with: .color(learning ? accent : Color.primary.opacity(0.75)),
                            style: StrokeStyle(lineWidth: arcWidth, lineCap: .round))
         }
 

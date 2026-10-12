@@ -40,6 +40,8 @@ struct TimelinePanel: View {
     let tool: TimelineTool
     let drawStyle: DrawStyle
     let period: Double
+    /// The tempo lane folded down to a strip.
+    @Binding var tempoFolded: Bool
 
     @State private var scrollX: CGFloat = 0
     @State private var scrollPosition = ScrollPosition(edge: .leading)
@@ -118,13 +120,15 @@ struct TimelinePanel: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            LaneHeaders(session: session, order: heldOrder ?? session.laneOrder)
+            LaneHeaders(session: session, order: heldOrder ?? session.laneOrder, tempoFolded: $tempoFolded)
                 .frame(width: Self.headerWidth)
             Divider()
             VStack(spacing: 0) {
             GeometryReader { geometry in
                 let layout = TimelineLayout(pixelsPerBeat: pixelsPerBeat, scrollX: scrollX, size: geometry.size,
-                                            laneOrder: heldOrder ?? session.laneOrder, expanded: session.expandedLanes)
+                                            laneOrder: heldOrder ?? session.laneOrder, expanded: session.expandedLanes,
+                                            tempoHeight: tempoFolded ? TimelineLayout.tempoFoldedHeight
+                                                                     : TimelineLayout.tempoOpenHeight)
                 let snapshot = TimelineSnapshot(session: session, library: library, tool: tool, draft: draft,
                                                 selection: automationSelection, marquee: marquee,
                                                 accent: accent, draftMark: draftMark)
@@ -284,8 +288,8 @@ struct TimelinePanel: View {
     /// character, not key code, so the keys beside the letters work too. The
     /// playhead stays where it is on screen.
     private func zoomStep(_ factor: Double) -> KeyPress.Result {
-        pixelsPerBeat = min(max(pixelsPerBeat * factor, TransportBar.zoomRange.lowerBound),
-                            TransportBar.zoomRange.upperBound)
+        pixelsPerBeat = min(max(pixelsPerBeat * factor, TimelineZoom.range.lowerBound),
+                            TimelineZoom.range.upperBound)
         return .handled
     }
 
@@ -329,8 +333,8 @@ struct TimelinePanel: View {
             .onChanged { value in
                 let base = zoomBase ?? pixelsPerBeat
                 if zoomBase == nil { zoomBase = pixelsPerBeat }
-                pixelsPerBeat = min(max(base * value.magnification, TransportBar.zoomRange.lowerBound),
-                                    TransportBar.zoomRange.upperBound)
+                pixelsPerBeat = min(max(base * value.magnification, TimelineZoom.range.lowerBound),
+                                    TimelineZoom.range.upperBound)
             }
             .onEnded { _ in zoomBase = nil }
     }
@@ -348,8 +352,8 @@ struct TimelinePanel: View {
         let factor = WheelZoom.factor(deltaY: Double(event.scrollingDeltaY),
                                       precise: event.hasPreciseScrollingDeltas,
                                       inverted: event.isDirectionInvertedFromDevice)
-        let zoomed = min(max(pixelsPerBeat * factor, TransportBar.zoomRange.lowerBound),
-                         TransportBar.zoomRange.upperBound)
+        let zoomed = min(max(pixelsPerBeat * factor, TimelineZoom.range.lowerBound),
+                         TimelineZoom.range.upperBound)
         guard zoomed != pixelsPerBeat else { return nil }
         let now = Date()
         let beat: Double
@@ -480,7 +484,7 @@ struct TimelinePanel: View {
                 if session.selection.contains(clip.id) { session.selection.remove(clip.id) } else { session.selection.insert(clip.id) }
             } else {
                 if !session.selection.contains(clip.id) { session.selection = [clip.id] }
-                // Its row: a stem's in an expanded lane, which the clip bar's
+                // Its row: a stem's in an expanded lane, which the inspector's
                 // gain and mute then work on; the clip's own otherwise.
                 if session.selection == [clip.id] { session.selectedPart = layout.part(atY: p.y, lane: lane) }
             }
@@ -1000,32 +1004,58 @@ struct PlayheadOverlay: View {
 /// height the column is given, never from one measured over there.
 /// The tempo strip's header: its name, and the master tempo - a lock that
 /// holds the whole mix at one tempo, and the tempo it holds.
+/// The tempo lane's header: the master tempo, its lock, and the fold.
+/// Folded, one line - the tempo and whether it is locked; open, the lock
+/// and the field to type the master tempo into.
 struct MasterTempoHeader: View {
     let session: MixSession
-    @Environment(\.accent) private var accent
+    @Binding var folded: Bool
 
     var body: some View {
         let document = session.document
         let locked = document.masterLocked
         VStack(alignment: .leading, spacing: 8) {
-            Text("Tempo")
-                .font(.caption.weight(.medium))
+            HStack(spacing: 4) {
+                Button {
+                    folded.toggle()
+                } label: {
+                    Image(systemName: folded ? "chevron.right" : "chevron.down")
+                        .font(.system(size: 9, weight: .bold))
+                        .frame(width: 12)
+                    Text("Tempo")
+                        .font(.caption.weight(.medium))
+                }
+                .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
-            Toggle(isOn: Binding(get: { locked }, set: { on in
-                let here = session.tempo.bpm(atBeat: max(0, session.playheadBeat()))
-                session.perform { $0.setMasterLocked(on, fallbackBPM: here) }
-            })) {
-                Label("Master", systemImage: locked ? "lock.fill" : "lock.open")
-                    .foregroundStyle(locked ? accent : Color.secondary)
+                .help(folded ? "Show the tempo lane" : "Fold the tempo lane to a strip")
+                if folded {
+                    Spacer(minLength: 4)
+                    if locked {
+                        Image(systemName: "lock.fill").font(.caption2).foregroundStyle(.secondary)
+                            .help("Master tempo locked")
+                    }
+                    Text(String(format: "%.2f", document.masterBPM ?? document.projectBPM))
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(locked ? .primary : .secondary)
+                        .padding(.trailing, 10)
+                }
             }
-            .toggleStyle(.button)
-            .help(locked
-                  ? "Master tempo locked: the whole mix plays at this tempo. Click to unlock - every tempo point goes back to its own tempo."
-                  : "Lock the whole mix to the master tempo. The tempo points keep their own tempo and get it back when unlocked.")
-            BPMField(value: document.masterBPM ?? document.projectBPM, fractionDigits: 2, width: 70) { value in
-                session.perform { $0.setMasterBPM(value) }
+            if !folded {
+                Toggle(isOn: Binding(get: { locked }, set: { on in
+                    let here = session.tempo.bpm(atBeat: max(0, session.playheadBeat()))
+                    session.perform { $0.setMasterLocked(on, fallbackBPM: here) }
+                })) {
+                    Label("Master", systemImage: locked ? "lock.fill" : "lock.open")
+                }
+                .toggleStyle(.button)
+                .help(locked
+                      ? "Master tempo locked: the whole mix plays at this tempo. Click to unlock - every tempo point goes back to its own tempo."
+                      : "Lock the whole mix to the master tempo. The tempo points keep their own tempo and get it back when unlocked.")
+                BPMField(value: document.masterBPM ?? document.projectBPM, fractionDigits: 2, width: 70) { value in
+                    session.perform { $0.setMasterBPM(value) }
+                }
+                .help(locked ? "The master tempo, heard at once" : "The master tempo, heard once it is locked")
             }
-            .help(locked ? "The master tempo, heard at once" : "The master tempo, heard once it is locked")
         }
     }
 }
@@ -1034,6 +1064,7 @@ struct LaneHeaders: View {
     let session: MixSession
     /// The lanes top to bottom, as the timeline beside it draws them.
     let order: [Int]
+    @Binding var tempoFolded: Bool
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1045,10 +1076,10 @@ struct LaneHeaders: View {
                 .padding(.leading, 12)
                 .frame(height: TimelineLayout.transitionHeight)
                 .overlay(alignment: .top) { Divider() }
-            MasterTempoHeader(session: session)
+            MasterTempoHeader(session: session, folded: $tempoFolded)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.leading, 12)
-                .frame(height: TimelineLayout.tempoHeight)
+                .padding(.leading, 10)
+                .frame(height: tempoFolded ? TimelineLayout.tempoFoldedHeight : TimelineLayout.tempoOpenHeight)
                 .overlay(alignment: .top) { Divider() }
             // In the rows' order, keyed by lane: a header moves with its
             // lane rather than being renamed.
@@ -1057,14 +1088,60 @@ struct LaneHeaders: View {
                     laneHeader(lane)
                 }
             }
+            addLaneRow
             // The scroll bar and its divider, under the timeline.
             Color.clear.frame(height: TimelineScrollbar.height + 1)
         }
         .background(Color(nsColor: .controlBackgroundColor))
     }
 
-    /// One lane's header: its name, switches and knobs, and in an expanded
-    /// lane its stems' names, at their rows.
+    /// Under the last lane: another lane, up to six, or one fewer. Both
+    /// work at the bottom - added under the others, removed from under them
+    /// - so the lanes above never change their number. The timeline keeps
+    /// the same strip free beside it (TimelineLayout.addLaneHeight).
+    private var addLaneRow: some View {
+        let count = session.document.lanes.count
+        let full = count >= Clip.maxLanes
+        let bottom = order.last
+        let removable = bottom.map { session.document.canRemoveLane($0) } ?? false
+        return HStack(spacing: 14) {
+            Button {
+                session.addLane()
+            } label: {
+                Label("Lane", systemImage: "plus")
+            }
+            .disabled(full)
+            .help(full ? "A mix has at most \(Clip.maxLanes) lanes"
+                       : "Add a lane under the others (up to \(Clip.maxLanes))")
+            Button {
+                if let bottom { session.removeLane(bottom) }
+            } label: {
+                Label("Lane", systemImage: "minus")
+            }
+            .disabled(!removable)
+            .help(removeHelp(bottom: bottom, count: count))
+            Spacer()
+        }
+        .buttonStyle(.borderless)
+        .foregroundStyle(.secondary)
+        .font(.callout)
+        .padding(.leading, 12)
+        .frame(height: TimelineLayout.addLaneHeight)
+        .overlay(alignment: .top) { Divider() }
+    }
+
+    private func removeHelp(bottom: Int?, count: Int) -> String {
+        guard let bottom else { return "" }
+        if count <= Clip.defaultLanes { return "A mix keeps at least \(Clip.defaultLanes) lanes" }
+        if session.document.clips.contains(where: { $0.lane == bottom }) {
+            return "Lane \(LaneStyle.number(bottom)) still holds clips - move or delete them to remove it"
+        }
+        return "Remove the bottom lane, Lane \(LaneStyle.number(bottom))"
+    }
+
+    /// One lane's header: its colour down the whole edge, its name and
+    /// switches, its knobs, and in an expanded lane its stems' names, at
+    /// their rows.
     @ViewBuilder
     private func laneHeader(_ lane: Int) -> some View {
         let state = session.document.lanes[lane]
@@ -1073,8 +1150,7 @@ struct LaneHeaders: View {
             HStack(spacing: 0) {
                 VStack(alignment: .leading, spacing: 7) {
                     HStack(spacing: 3) {
-                        LaneColorButton(session: session, lane: lane)
-                        Text("Lane \(LaneStyle.names[lane])")
+                        Text("Lane \(LaneStyle.number(lane))")
                             .font(.callout.weight(.semibold))
                         // The playhead is the engine's frame counter, which
                         // nothing observes, so the mark polls it - and is
@@ -1088,12 +1164,12 @@ struct LaneHeaders: View {
                     }
                     HStack(spacing: 4) {
                         LaneToggle(title: "M", on: state.muted, tint: .yellow) { session.toggleLaneMute(lane) }
-                            .help("Mute lane \(LaneStyle.names[lane])")
+                            .help("Mute lane \(LaneStyle.number(lane))")
                         LaneToggle(title: "S", on: state.solo, tint: .green) { session.toggleLaneSolo(lane) }
-                            .help("Solo lane \(LaneStyle.names[lane])")
+                            .help("Solo lane \(LaneStyle.number(lane))")
                         LaneExpandButton(on: expanded) { session.setLaneExpanded(lane, !expanded) }
-                            .help(expanded ? "Fold the stems of lane \(LaneStyle.names[lane]) away"
-                                           : "Show the stems of lane \(LaneStyle.names[lane])'s clips - drums, bass, vocals and the rest, each a row with its own level, mute and automation. Songs never separated are separated now.")
+                            .help(expanded ? "Fold the stems of lane \(LaneStyle.number(lane)) away"
+                                           : "Show the stems of lane \(LaneStyle.number(lane))'s clips - drums, bass, vocals and the rest, each a row with its own level, mute and automation. Songs never separated are separated now.")
                     }
                 }
                 Spacer(minLength: 4)
@@ -1119,6 +1195,11 @@ struct LaneHeaders: View {
                         .overlay(alignment: .top) { Divider().opacity(0.5) }
                 }
             }
+        }
+        // The lane's colour runs down its whole edge, stem rows and all; a
+        // click on it changes the colour.
+        .overlay(alignment: .leading) {
+            LaneColorButton(session: session, lane: lane)
         }
     }
 }
@@ -1178,7 +1259,7 @@ struct LaneExpandButton: View {
                 .font(.system(size: 9, weight: .bold))
                 .frame(width: 22, height: 17)
                 .foregroundStyle(on ? Color.black : Color.secondary)
-                .background(RoundedRectangle(cornerRadius: 4).fill(on ? Color.accentColor : Color.secondary.opacity(0.15)))
+                .background(RoundedRectangle(cornerRadius: 4).fill(on ? Color.primary.opacity(0.75) : Color.secondary.opacity(0.15)))
         }
         .buttonStyle(.plain)
         .accessibilityLabel(on ? "Hide stems" : "Show stems")
@@ -1203,7 +1284,7 @@ struct LanePlayMark: View {
     }
 }
 
-/// The colour bar in a lane header, and the popover that changes it.
+/// The colour edge down a lane header, and the popover that changes it.
 ///
 /// The colour well sends a value for every movement in the colour panel,
 /// so it is treated like a drag: the first real change records the document
@@ -1218,17 +1299,18 @@ struct LaneColorButton: View {
     @State private var recorded = false
     @Environment(\.colorScheme) private var colorScheme
 
-    static let swatches = LaneSettings.defaultColors + ["E8484D", "F2C230", "3FBF6E", "2EC4C4", "8A8F98"]
+    static let swatches = LaneSettings.defaultColors + ["E8484D", "2EC4C4", "8A8F98"]
 
-    private var name: String { LaneStyle.names[lane] }
+    private var name: String { LaneStyle.number(lane) }
     private var current: String { LaneStyle.hex(lane, session.document.lanes) }
 
     var body: some View {
         Button { showing = true } label: {
-            RoundedRectangle(cornerRadius: 2)
+            Rectangle()
                 .fill(LaneStyle.color(lane, session.document.lanes))
-                .frame(width: 4, height: 16)
-                .frame(width: 10, height: 20)
+                .frame(width: 3)
+                .frame(width: 8, alignment: .leading)
+                .frame(maxHeight: .infinity)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

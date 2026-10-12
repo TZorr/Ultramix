@@ -72,7 +72,7 @@ final class MixSession {
     /// the bar brings it back.
     var beatgridHidden = false
 
-    /// The track the clip bar's Beatgrid button means: the selected clips'
+    /// The track Edit Beatgrid (inspector, ⌘E) means: the selected clips'
     /// track, or the one selected in the library, whichever was picked last.
     /// The editor works on the library's track, never on a clip, so a track
     /// not yet in the mix is as editable as one that is.
@@ -83,7 +83,7 @@ final class MixSession {
         return lastPick == .library ? fromLibrary ?? fromClips : fromClips ?? fromLibrary
     }
 
-    /// The clip bar's Beatgrid button: opens the target, or - when the pane
+    /// Edit Beatgrid (inspector, ⌘E): opens the target, or - when the pane
     /// already shows it - folds it away and back, as E does.
     func beatgridButton() {
         guard let target = beatgridTarget else { return }
@@ -109,6 +109,7 @@ final class MixSession {
         // edit, undo, or a clip let go of.
         didSet {
             if isLive { liveOrder = LiveSet.compacted(liveOrder, before: oldValue, after: document) }
+            if document.lanes.count != oldValue.lanes.count { fitLaneOrder() }
             if let mark = selectedMark, !document.hasMark(mark) { selectedMark = nil }
         }
     }
@@ -125,7 +126,7 @@ final class MixSession {
         }
     }
     /// The stem row the selected clip was picked on, in an expanded lane:
-    /// the clip bar's gain and mute then work on that stem. Nil for the clip
+    /// the inspector's gain and mute then work on that stem. Nil for the clip
     /// itself. Set after `selection`, which clears it.
     var selectedPart: Stem?
     /// The lanes shown with a row per stem under each clip. View state, as
@@ -153,7 +154,7 @@ final class MixSession {
     /// lets go of the clips, so Delete and ⇧⌘X mean the bar.
     var selectedMark: MarkRef?
     /// Which was picked last, clips on the timeline or a row in the library:
-    /// the clip bar's Beatgrid button opens that one's track.
+    /// Edit Beatgrid opens that one's track.
     enum PickSource { case clips, library }
     var lastPick: PickSource = .clips
     /// A message for the user - an edit that was refused, a file that would
@@ -342,8 +343,9 @@ final class MixSession {
 
     /// Adds tracks one after another at the end of the mix, each with a
     /// beatmix of `beatmix` into it (see Beatmix.swift). One undo step for
-    /// all of them; if one cannot be placed, none is. The length becomes the
-    /// one the toolbar button adds with next, unless `remember` is false.
+    /// all of them; if one cannot be placed, none is. The length is remembered
+    /// - loops made in the beatgrid editor are added with it - unless
+    /// `remember` is false.
     func addTracks(_ trackIDs: [UUID], beatmix: BeatmixLength, remember: Bool = true) {
         guard !trackIDs.isEmpty else { return }
         if remember { beatmixLength = beatmix }
@@ -568,7 +570,7 @@ final class MixSession {
         let chosen = transitionStyle
         let grids = grids
         if let mark = selectedMark {
-            perform { try $0.applyStyle(chosen, toMark: mark, grids: grids) }
+            perform { try $0.apply(.preset(chosen), toMark: mark, grids: grids) }
             return
         }
         let ids = selection.isEmpty ? nil : selection
@@ -604,6 +606,14 @@ final class MixSession {
         return moved
     }
 
+    /// Writes a style or custom moves into the picked bar. One undo step.
+    func applyToSelectedMark(_ choice: TransitionChoice) {
+        guard let mark = selectedMark else { return }
+        if case .preset(let style) = choice { transitionStyle = style }
+        let grids = grids
+        perform { try $0.apply(choice, toMark: mark, grids: grids) }
+    }
+
     func removeSelectedMark() {
         guard let mark = selectedMark else { return }
         let grids = grids
@@ -635,11 +645,40 @@ final class MixSession {
 
     /// The live set's rows, top to bottom: empty lanes at the bottom (see
     /// LiveSet.compacted). Not saved, like the set.
-    private(set) var liveOrder = Array(0..<Clip.laneCount)
+    private(set) var liveOrder = Array(0..<Clip.defaultLanes)
 
-    /// The lanes top to bottom: A, B, C in a mix, the live set's own order
+    /// The lanes top to bottom: in order in a mix, the live set's own order
     /// in a live set.
-    var laneOrder: [Int] { isLive ? liveOrder : Array(0..<Clip.laneCount) }
+    var laneOrder: [Int] { isLive ? liveOrder : Array(document.lanes.indices) }
+
+    /// After the number of lanes changed - added, removed, undone, a mix
+    /// opened: the live order keeps the lanes it had, in its order, and
+    /// gets the new ones at the bottom; a lane that is gone is folded no
+    /// more.
+    private func fitLaneOrder() {
+        let lanes = document.lanes.indices
+        liveOrder = liveOrder.filter { lanes.contains($0) }
+        liveOrder += lanes.filter { !liveOrder.contains($0) }
+        expandedLanes = expandedLanes.filter { lanes.contains($0) }
+    }
+
+    /// "+ Lane": an empty lane under the others, one undo step.
+    func addLane() {
+        perform { try $0.addLane() }
+    }
+
+    /// Takes an empty lane away; the ones under it move up. Its place in the
+    /// live order and its fold go with it, and those under it move up there
+    /// too.
+    func removeLane(_ lane: Int) {
+        let before = document.lanes.count
+        let order = liveOrder
+        let expanded = expandedLanes
+        perform { try $0.removeLane(lane) }
+        guard document.lanes.count < before else { return }
+        liveOrder = order.filter { $0 != lane }.map { $0 > lane ? $0 - 1 : $0 }
+        expandedLanes = Set(expanded.filter { $0 != lane }.map { $0 > lane ? $0 - 1 : $0 })
+    }
 
     var liveSubtitle: String {
         let count = document.clips.count

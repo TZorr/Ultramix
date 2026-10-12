@@ -112,7 +112,7 @@ final class KnobRecorder {
     private func sample(_ slot: Int, _ value: Int) {
         guard let session, knobs.setup.slots.indices.contains(slot) else { return }
         let beat = heardBeat(session)
-        let lane = slot / 2
+        let lane = slot / LaneKnobMath.knobsPerLane
         let document = session.document
         guard let clip = document.clip(atBeat: beat, lane: lane, grids: session.grids) else { return }
         let function = knobs.setup.slots[slot].function

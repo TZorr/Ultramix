@@ -22,8 +22,13 @@
 //  kicks drift away part way through, and when an intro sits beside the grid.
 //
 //  Every change is stored as the track's correction at once, so the mix
-//  follows while the editor is open. The analysis is never touched, and "Use
-//  Analysis" goes back to it.
+//  follows while the editor is open. The analysis is never touched, and
+//  Analysis › Revert to Analysis goes back to it.
+//
+//  Laid out as a drawer with its own header - the track, how sure the
+//  analysis is, whether the grid was edited, the Analysis menu and Done -
+//  then the controls on the left in two groups, Grid and Cues & loops, and
+//  the strip on the right with its own toolbar and a legend for its marks.
 //
 
 import SwiftUI
@@ -63,6 +68,7 @@ struct BeatgridEditor: View {
     @State private var viewportWidth: CGFloat = 0
     @State private var showSeconds: Double?
     @State private var visibleRange = 0.0...0.0
+    @State private var centreSeconds: Double?
     @FocusState private var focused: Bool
 
     /// The spans the strip can be set to. ±15 s to start - a phrase at a
@@ -98,29 +104,44 @@ struct BeatgridEditor: View {
         let first = track.firstBeatSeconds ?? 0
         let duration = max(track.durationSeconds, 1)
         let grid = SourceGrid(bpm: bpm, firstBeatSeconds: first, durationSeconds: duration)
-        return VStack(alignment: .leading, spacing: 6) {
+        return VStack(spacing: 0) {
             header(track)
-            gridRow(track, bpm: bpm, first: first)
-            markRow(track, grid: grid)
-            BeatgridStrip(audio: library.audio(for: trackID), waveform: library.waveforms[trackID],
-                          preview: preview, trackID: trackID, grid: grid, onsets: onsets,
-                          cues: track.cuePoints, selectedLine: selectedLine, region: region, accent: accent,
-                          pixelsPerSecond: pixelsPerSecond, viewportWidth: $viewportWidth,
-                          showSeconds: $showSeconds, visibleRange: $visibleRange,
-                          onSelect: { selectedLine = $0 },
-                          onPick: { seconds in
-                              setFirstBeat(seconds, track)
-                              selectedLine = 0
-                          },
-                          onRegion: { region = $0 },
-                          onMoveCue: { number, seconds in library.setCue(trackID, number: number, seconds: seconds) },
-                          onGoToCue: { goTo($0, grid: grid) })
-            .frame(minHeight: 90)
-            .clipShape(RoundedRectangle(cornerRadius: 4))
-            fitRow(track, bpm: bpm, first: first, duration: duration)
+            Divider()
+            HStack(spacing: 0) {
+                ScrollView(.vertical) {
+                    VStack(alignment: .leading, spacing: 0) {
+                        gridSection(track, bpm: bpm, first: first)
+                        Divider()
+                        cueSection(track, grid: grid)
+                    }
+                }
+                .scrollIndicators(.automatic)
+                .frame(width: 270)
+                .background(Color(nsColor: .controlBackgroundColor))
+                Divider()
+                VStack(spacing: 0) {
+                    waveToolbar(bpm: bpm, first: first, grid: grid)
+                    Divider()
+                    BeatgridStrip(audio: library.audio(for: trackID), waveform: library.waveforms[trackID],
+                                  preview: preview, trackID: trackID, grid: grid, onsets: onsets,
+                                  cues: track.cuePoints, selectedLine: selectedLine, region: region, accent: accent,
+                                  pixelsPerSecond: pixelsPerSecond, viewportWidth: $viewportWidth,
+                                  showSeconds: $showSeconds, centreSeconds: $centreSeconds,
+                                  visibleRange: $visibleRange,
+                                  onSelect: { selectedLine = $0 },
+                                  onPick: { seconds in
+                                      setFirstBeat(seconds, track)
+                                      selectedLine = 0
+                                  },
+                                  onRegion: { region = $0 },
+                                  onMoveCue: { number, seconds in library.setCue(trackID, number: number, seconds: seconds) },
+                                  onGoToCue: { goTo($0, grid: grid) })
+                    .frame(minHeight: 70)
+                    Divider()
+                    fitRow(track, bpm: bpm, first: first, duration: duration)
+                }
+            }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
         .focusable()
         .focused($focused)
         .focusEffectDisabled()
@@ -172,61 +193,136 @@ struct BeatgridEditor: View {
         }
     }
 
-    // MARK: - Rows
+    // MARK: - Header
 
+    /// The track, how the grid came about - analyser, confidence, edited or
+    /// not - and what can be done about it: the Analysis menu, and Done.
     private func header(_ track: Track) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(track.title).font(.headline)
-            if let artist = track.artist {
-                Text(artist).foregroundStyle(.secondary)
-            }
-            Group {
-                if let analysis = track.analysis {
-                    Text(String(format: "%.3f BPM, bar one at %.3f s, confidence %d %%%@%@",
-                                analysis.bpm, analysis.firstBeatSeconds, Int(analysis.confidence * 100),
-                                analysis.analyser == .ultramix ? "" : " · \(analysis.analyser.title)",
-                                track.isCorrected ? " · corrected by hand" : ""))
-                } else if track.state == .failed {
-                    Text("Analysis failed: \(track.failure ?? "unknown reason"). Set the tempo by hand or tap it.")
-                } else {
-                    Text("Not analysed yet.")
+        HStack(spacing: 12) {
+            Text("Beatgrid")
+                .font(.caption2.weight(.bold))
+                .textCase(.uppercase)
+                .foregroundStyle(.secondary)
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(track.title).font(.headline).lineLimit(1)
+                if let artist = track.artist {
+                    Text(artist).foregroundStyle(.secondary).lineLimit(1)
                 }
             }
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .lineLimit(1)
+            .layoutPriority(1)
+            statusChip(track)
+            Text(track.isCorrected ? "Edited by hand" : "As analysed")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
             Spacer(minLength: 8)
-            Button("Use Analysis") { library.resetCorrection(trackID) }
-                .disabled(!track.isCorrected || track.analysis == nil)
-            Button(String(format: "Analyse near %.1f BPM", track.bpm ?? 120)) {
-                library.reanalyse(trackID, nearBPM: track.bpm ?? 120, clearCorrection: true)
-            }
-            .help("Run the analysis again with the analyser chosen in Settings, searching only close to this tempo")
-            Button {
-                close()
-            } label: {
-                Image(systemName: "xmark")
-            }
-            .help("Close the beatgrid editor (Esc)")
+            analysisMenu(track)
+            // No Return shortcut: Return adds tracks from the library and
+            // confirms typed tempos, and must not close the drawer as well.
+            Button("Done") { close() }
+                .help("Close the beatgrid editor (Esc)")
         }
         .controlSize(.small)
+        .padding(.horizontal, 14)
+        .frame(height: 40)
+        .background(.bar)
     }
 
-    private func gridRow(_ track: Track, bpm: Double, first: Double) -> some View {
-        HStack(spacing: 6) {
-            Text("Tempo").foregroundStyle(.secondary)
-            BPMField(value: bpm, fractionDigits: 3, width: 82) { value in
-                if track.bpm != nil && BPMInput.isLargeChange(from: bpm, to: value) {
-                    largeChange = LargeChange(from: bpm, to: value)
-                } else {
-                    setBPM(value, track)
+    /// Which analyser found the grid and how sure it was, coloured by that:
+    /// green from 80 %, yellow from 50 %, red below.
+    @ViewBuilder
+    private func statusChip(_ track: Track) -> some View {
+        if let analysis = track.analysis {
+            let confidence = analysis.confidence
+            let color: Color = confidence >= 0.8 ? Color(red: 0.3, green: 0.8, blue: 0.4)
+                : confidence >= 0.5 ? Color(red: 0.95, green: 0.8, blue: 0.2) : Color(red: 0.95, green: 0.3, blue: 0.3)
+            HStack(spacing: 6) {
+                Circle().fill(color).frame(width: 7, height: 7)
+                Text("\(analysis.analyser.title) · \(Int(confidence * 100)) % confidence")
+                    .monospacedDigit()
+            }
+            .font(.callout)
+            .lineLimit(1)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 3)
+            .background(Capsule().fill(Color.primary.opacity(0.08)))
+            .help(String(format: "As analysed: %.3f BPM, bar one at %.3f s", analysis.bpm, analysis.firstBeatSeconds))
+        } else if track.state == .failed {
+            Label("Analysis failed: \(track.failure ?? "unknown reason"). Set the tempo by hand or tap it.",
+                  systemImage: "exclamationmark.triangle.fill")
+                .font(.callout)
+                .foregroundStyle(.orange)
+                .lineLimit(1)
+        } else {
+            Text("Not analysed yet").font(.callout).foregroundStyle(.secondary)
+        }
+    }
+
+    /// Everything that runs the analysis again or goes back to it, in one
+    /// place - and which of them overwrites the hand's work, said in the
+    /// title.
+    private func analysisMenu(_ track: Track) -> some View {
+        let current = track.bpm ?? 120
+        let mix = session.document.masterBPM ?? session.document.projectBPM
+        return Menu("Analysis") {
+            Button(String(format: "Re-analyse near Mix Tempo (%.1f BPM)", mix)) {
+                library.reanalyse(trackID, nearBPM: mix, clearCorrection: true)
+            }
+            Button(String(format: "Re-analyse near %.1f BPM", current)) {
+                library.reanalyse(trackID, nearBPM: current, clearCorrection: true)
+            }
+            Button("Correct BPM…") { showBPMPanel = true }
+            Divider()
+            Button("Revert to Analysis") { library.resetCorrection(trackID) }
+                .disabled(!track.isCorrected || track.analysis == nil)
+        }
+        .fixedSize()
+        .help("Run the analysis again with the analyser chosen in Settings, searching only close to a tempo - this replaces the grid edited by hand - or go back to the analysis as it was")
+    }
+
+    // MARK: - Left column
+
+    private func sectionTitle(_ title: String) -> some View {
+        Text(title)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.secondary)
+    }
+
+    /// Tempo and bar one, each one value between − and +, and the grid
+    /// moved by whole beats.
+    private func gridSection(_ track: Track, bpm: Double, first: Double) -> some View {
+        VStack(alignment: .leading, spacing: 9) {
+            sectionTitle("Grid")
+            StepperRow(title: "Tempo", hint: "Step 0.01 · ⇧ 0.1",
+                       decreaseLabel: "Tempo down", increaseLabel: "Tempo up") { direction, coarse in
+                setBPM(bpm + Double(direction) * (coarse ? 0.1 : 0.01), track)
+            } value: {
+                BPMField(value: bpm, fractionDigits: 3, width: 78, showsSet: false) { value in
+                    if track.bpm != nil && BPMInput.isLargeChange(from: bpm, to: value) {
+                        largeChange = LargeChange(from: bpm, to: value)
+                    } else {
+                        setBPM(value, track)
+                    }
                 }
             }
-            Button("−0.01") { setBPM(bpm - 0.01, track) }
-            Button("+0.01") { setBPM(bpm + 0.01, track) }
-            Button("Correct BPM") { showBPMPanel = true }
+            StepperRow(title: "Bar 1 at", hint: "Step 1 ms · ⇧ 10 ms",
+                       decreaseLabel: "Bar one earlier", increaseLabel: "Bar one later") { direction, coarse in
+                setFirstBeat(first + Double(direction) * (coarse ? 0.010 : 0.001), track)
+            } value: {
+                StepperValue(text: String(format: "%.3f s", first), width: 78)
+            }
+            HStack(spacing: 6) {
+                Text("Shift grid").foregroundStyle(.secondary)
+                Spacer(minLength: 6)
+                Button("◀ 1 beat") { shiftBeat(-1, track) }
+                    .help("Bar one a beat earlier")
+                Button("1 beat ▶") { shiftBeat(1, track) }
+                    .help("Bar one a beat later - when the grid's one is really the two")
+            }
+            Button("Correct BPM…") { showBPMPanel = true }
+                .frame(maxWidth: .infinity)
                 .help("Tap along to check the tempo, then pick half, as measured or double")
-                .popover(isPresented: $showBPMPanel, arrowEdge: .top) {
+                .popover(isPresented: $showBPMPanel, arrowEdge: .trailing) {
                     BPMCorrectionPanel(detected: track.analysis?.bpm ?? track.bpm,
                                        sourceLabel: sourceLabel(track)) { value in
                         setBPM(value, track)
@@ -236,95 +332,168 @@ struct BeatgridEditor: View {
                             .controlSize(.small)
                     }
                 }
-            Divider().frame(height: 14)
-            Text("Bar one").foregroundStyle(.secondary)
-            Text(String(format: "%.3f s", first))
+        }
+        .controlSize(.small)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+    }
+
+    /// Cue points, the marked stretch, and the loop made of it - what the
+    /// drawer is opened for when the grid is already right.
+    private func cueSection(_ track: Track, grid: SourceGrid) -> some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack {
+                sectionTitle("Cues & loops")
+                Spacer()
+                Button("Clear cues") { library.clearCues(trackID) }
+                    .buttonStyle(.borderless)
+                    .disabled(track.cuePoints.isEmpty)
+                    .help("Take every cue point off this track")
+            }
+            HStack(spacing: 4) {
+                ForEach(Array(CueRules.numbers), id: \.self) { number in
+                    cueButton(number, track: track, grid: grid)
+                }
+            }
+            Text(regionLabel(grid))
+                .foregroundStyle(region == nil ? .secondary : .primary)
                 .monospacedDigit()
-                .frame(width: 62, alignment: .leading)
-            Button("−10") { setFirstBeat(first - 0.010, track) }
-                .help("Bar one 10 ms earlier")
-            Button("−1") { setFirstBeat(first - 0.001, track) }
-            Button("+1") { setFirstBeat(first + 0.001, track) }
-            Button("+10") { setFirstBeat(first + 0.010, track) }
-                .help("Bar one 10 ms later")
-            Button("◀ Beat") { shiftBeat(-1, track) }
-                .help("Bar one a beat earlier")
-            Button("Beat ▶") { shiftBeat(1, track) }
-                .help("Bar one a beat later - when the grid's one is really the two")
-            Divider().frame(height: 14)
-            playButton(bpm: bpm, first: first)
+                .lineLimit(1)
+                .help("Drag in the strip to mark a stretch, or I and O at the selected line or while it plays")
+            HStack(spacing: 6) {
+                Text("Repeat").foregroundStyle(.secondary)
+                Spacer(minLength: 6)
+                Picker("Repeat", selection: $repeats) {
+                    ForEach([1, 2, 4, 8, 16, 32], id: \.self) { Text("× \($0)").tag($0) }
+                }
+                .labelsHidden()
+                .fixedSize()
+                .help("How often the loop repeats")
+            }
+            HStack(spacing: 6) {
+                Button("Loop at End") { loop(atPlayhead: false) }
+                    .frame(maxWidth: .infinity)
+                    .help("Put the marked stretch at the end of the mix as a loop, with the current beatmix")
+                Button("Loop at Playhead") { loop(atPlayhead: true) }
+                    .frame(maxWidth: .infinity)
+                    .help("Put the marked stretch into the mix at the playhead as a loop")
+            }
+            .disabled(region == nil)
+        }
+        .controlSize(.small)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+    }
+
+    private func cueButton(_ number: Int, track: Track, grid: SourceGrid) -> some View {
+        let set = CueRules.cue(track.cuePoints, number: number) != nil
+        return Button {
+            if NSEvent.modifierFlags.contains(.option) {
+                library.setCue(trackID, number: number, seconds: nil)
+            } else {
+                cue(number, track: track, grid: grid)
+            }
+        } label: {
+            Text("\(number)").frame(maxWidth: .infinity)
+        }
+        .buttonStyle(.bordered)
+        .tint(set ? Color(red: 0.2, green: 0.75, blue: 0.5) : nil)
+        .help(set ? "Go to cue \(number) · ⌥-click to remove it"
+                  : "Set cue \(number) where the song is now (\(number))")
+        .contextMenu {
+            Button("Set Here") { library.setCue(trackID, number: number, seconds: spot(track, grid: grid)) }
+            Button("Go To") { goTo(CuePoint(number: number, seconds: cueSeconds(track, number)), grid: grid) }
+                .disabled(!set)
+            Button("Remove") { library.setCue(trackID, number: number, seconds: nil) }
+                .disabled(!set)
+        }
+    }
+
+    // MARK: - Strip
+
+    /// Above the strip: listening, the legend for what the strip draws, and
+    /// how much of the song it shows. Where the drawer is too narrow for all
+    /// of it, the legend goes first, then the word "Window" - never the
+    /// controls themselves.
+    private func waveToolbar(bpm: Double, first: Double, grid: SourceGrid) -> some View {
+        ViewThatFits(in: .horizontal) {
+            waveToolbarRow(bpm: bpm, first: first, grid: grid, legend: true, windowLabel: true)
+            waveToolbarRow(bpm: bpm, first: first, grid: grid, legend: false, windowLabel: true)
+            waveToolbarRow(bpm: bpm, first: first, grid: grid, legend: false, windowLabel: false)
+            waveToolbarRow(bpm: bpm, first: first, grid: grid, legend: false, windowLabel: false, compact: true)
+        }
+        .controlSize(.small)
+        .padding(.horizontal, 12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(height: 34)
+    }
+
+    /// `compact`: symbols instead of words, for the narrowest drawer; the
+    /// words stay in the help tags.
+    private func waveToolbarRow(bpm: Double, first: Double, grid: SourceGrid,
+                                legend showLegend: Bool, windowLabel: Bool, compact: Bool = false) -> some View {
+        HStack(spacing: compact ? 6 : 10) {
+            playButton(bpm: bpm, first: first, compact: compact)
             Toggle(isOn: $cycle) {
                 Label("Cycle", systemImage: "repeat")
+                    .labelStyle(.adaptive(iconOnly: compact))
             }
             .toggleStyle(.button)
             .disabled(region == nil)
             .help(region == nil ? "Mark a stretch to play it round and round"
                                 : "Play the marked stretch round and round · ← → move its start, ⌥← ⌥→ its end, ⇧ by a bar")
-            Toggle("Metronome", isOn: Binding(get: { preview.clickEnabled }, set: { preview.clickEnabled = $0 }))
-                .toggleStyle(.checkbox)
-            Spacer(minLength: 0)
+            if compact {
+                Toggle(isOn: Binding(get: { preview.clickEnabled }, set: { preview.clickEnabled = $0 })) {
+                    Image(systemName: "metronome")
+                }
+                .toggleStyle(.button)
+                .help("Metronome: click along with the preview")
+                .accessibilityLabel("Metronome")
+            } else {
+                Toggle("Metronome", isOn: Binding(get: { preview.clickEnabled }, set: { preview.clickEnabled = $0 }))
+                    .toggleStyle(.checkbox)
+                    .fixedSize()
+            }
+            if showLegend {
+                Divider().frame(height: 14)
+                legend
+            }
+            Spacer(minLength: 8)
+            HStack(spacing: 6) {
+                if windowLabel {
+                    Text("Window").foregroundStyle(.secondary)
+                }
+                Picker("Window", selection: $span) {
+                    ForEach(Self.spans, id: \.self) { Text(compact ? "\(Int($0))" : "±\(Int($0)) s").tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .fixedSize()
+            }
+            .help("How much of the song the strip shows, either side of the middle, in seconds")
+            playheadButton(grid: grid, compact: compact)
         }
-        .controlSize(.small)
     }
 
-    /// Cue points, the marked stretch and the span - what the pane was
-    /// opened up for.
-    private func markRow(_ track: Track, grid: SourceGrid) -> some View {
-        HStack(spacing: 6) {
-            Text("Cue").foregroundStyle(.secondary)
-            ForEach(Array(CueRules.numbers), id: \.self) { number in
-                let set = CueRules.cue(track.cuePoints, number: number) != nil
-                Button("\(number)") {
-                    if NSEvent.modifierFlags.contains(.option) {
-                        library.setCue(trackID, number: number, seconds: nil)
-                    } else {
-                        cue(number, track: track, grid: grid)
-                    }
-                }
-                .buttonStyle(.bordered)
-                .tint(set ? Color(red: 0.2, green: 0.75, blue: 0.5) : nil)
-                .help(set ? "Go to cue \(number) · ⌥-click to remove it"
-                          : "Set cue \(number) where the song is now")
-                .contextMenu {
-                    Button("Set Here") { library.setCue(trackID, number: number, seconds: spot(track, grid: grid)) }
-                    Button("Go To") { goTo(CuePoint(number: number, seconds: cueSeconds(track, number)), grid: grid) }
-                        .disabled(!set)
-                    Button("Remove") { library.setCue(trackID, number: number, seconds: nil) }
-                        .disabled(!set)
-                }
-            }
-            Button("Clear") { library.clearCues(trackID) }
-                .disabled(track.cuePoints.isEmpty)
-                .help("Take every cue point off this track")
-            Divider().frame(height: 14)
-            Text(regionLabel(grid))
-                .foregroundStyle(region == nil ? .secondary : .primary)
-                .monospacedDigit()
-                .lineLimit(1)
-                .frame(minWidth: 150, alignment: .leading)
-            Picker("×", selection: $repeats) {
-                ForEach([1, 2, 4, 8, 16, 32], id: \.self) { Text("× \($0)").tag($0) }
-            }
-            .labelsHidden()
-            .frame(width: 66)
-            .help("How often the loop repeats")
-            Button("Loop at End") { loop(atPlayhead: false) }
-                .disabled(region == nil)
-                .help("Put the marked stretch at the end of the mix as a loop, with the current beatmix")
-            Button("Loop at Playhead") { loop(atPlayhead: true) }
-                .disabled(region == nil)
-                .help("Put the marked stretch into the mix at the playhead as a loop")
-            Spacer(minLength: 0)
-            Picker("Span", selection: $span) {
-                ForEach(Self.spans, id: \.self) { Text("±\(Int($0)) s").tag($0) }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .frame(width: 190)
-            .help("How much of the song the strip shows, either side of the middle. Scroll with the bar below it.")
-            playheadButton(grid: grid)
+    /// What the strip's marks mean, drawn as the strip draws them.
+    private var legend: some View {
+        HStack(spacing: 12) {
+            legendItem("Bar") { Rectangle().fill(StripColors.bar).frame(width: 2, height: 12) }
+            legendItem("Beat") { Rectangle().fill(StripColors.beat).frame(width: 1, height: 12) }
+            legendItem("Bar 1") { Rectangle().fill(StripColors.barOne).frame(width: 2, height: 12) }
+            legendItem("Off-grid kick") { Circle().fill(StripColors.offGrid).frame(width: 6, height: 6) }
         }
-        .controlSize(.small)
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .fixedSize()
+        .accessibilityElement(children: .combine)
+    }
+
+    private func legendItem(_ title: String, @ViewBuilder mark: () -> some View) -> some View {
+        HStack(spacing: 5) {
+            mark()
+            Text(title)
+        }
     }
 
     /// Jumps the view to the spot of the song that lies under the
@@ -332,37 +501,54 @@ struct BeatgridEditor: View {
     /// otherwise this song is not playing at the playhead and there is
     /// nowhere to jump to. The marked stretch stays where it is; only the
     /// view and the selected line move.
-    private func playheadButton(grid: SourceGrid) -> some View {
+    private func playheadButton(grid: SourceGrid, compact: Bool = false) -> some View {
         TimelineView(.periodic(from: .now, by: 0.25)) { _ in
             let seconds = session.document.sourceSeconds(ofTrack: trackID, atBeat: session.playheadBeat(),
                                                          grids: session.grids)
             Button {
                 guard let seconds else { return }
-                showSeconds = seconds
+                centreSeconds = seconds
                 selectedLine = BeatLines.nearestLine(to: seconds, bpm: grid.bpm, firstBeat: grid.firstBeatSeconds)
             } label: {
-                Image(systemName: "scope")
+                Label("Center Playhead", systemImage: "scope")
+                    .labelStyle(.adaptive(iconOnly: compact))
             }
+            .fixedSize()
             .disabled(seconds == nil)
             .help(seconds == nil ? "The timeline's playhead is not over a clip of this song"
                                  : "Show the spot under the timeline's playhead")
         }
     }
 
+    /// Under the strip: the grid's fit over the whole song, which is also
+    /// the overview to drag the view along, and what it found in words.
     private func fitRow(_ track: Track, bpm: Double, first: Double, duration: Double) -> some View {
         let fit = onsets.isEmpty ? nil
             : GridFit.summary(kicks: onsets, bpm: bpm, firstBeat: first, duration: duration)
         return VStack(alignment: .leading, spacing: 4) {
-            GridFitBar(summary: fit, duration: duration, visibleStart: visibleRange.lowerBound,
-                       visibleLength: visibleRange.upperBound - visibleRange.lowerBound) { seconds in
-                showSeconds = seconds
-                selectedLine = BeatLines.nearestLine(to: seconds, bpm: bpm, firstBeat: first)
+            HStack(spacing: 10) {
+                Text("Grid fit")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(width: 48, alignment: .leading)
+                GridFitBar(summary: fit, duration: duration, visibleStart: visibleRange.lowerBound,
+                           visibleLength: visibleRange.upperBound - visibleRange.lowerBound) { seconds in
+                    centreSeconds = seconds
+                } onEnd: { seconds in
+                    selectedLine = BeatLines.nearestLine(to: seconds, bpm: bpm, firstBeat: first)
+                }
+                .frame(height: 14)
+                Text("Drag to navigate")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .fixedSize()
             }
-            .frame(height: 12)
             if let fit {
                 fitNotes(fit, track: track, first: first, duration: duration)
             }
         }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
     }
 
     /// What the fit bar found, in words, with the fix that exists for it.
@@ -599,14 +785,16 @@ struct BeatgridEditor: View {
         }
     }
 
-    private func playButton(bpm: Double, first: Double) -> some View {
+    private func playButton(bpm: Double, first: Double, compact: Bool = false) -> some View {
         TimelineView(.periodic(from: .now, by: 0.2)) { _ in
             let playing = preview.isPlaying && preview.trackID == trackID
             Button {
                 togglePreview(bpm: bpm, first: first)
             } label: {
                 Label(playing ? "Stop" : "Play", systemImage: playing ? "stop.fill" : "play.fill")
+                    .labelStyle(.adaptive(iconOnly: compact))
             }
+            .fixedSize()
             .help(cycle ? "Play the marked stretch round and round (P) - the timeline stops"
                         : "Play from the selected gridline (P) - the timeline stops")
         }
@@ -623,13 +811,17 @@ struct BeatgridEditor: View {
 
 /// The whole track, one cell per `GridFit` window: green where the kicks sit
 /// on the lines, yellow and red as they move off, grey where the kick is not
-/// steady, empty where there is none. A click shows that part in the strip.
+/// steady, empty where there is none. It is also the strip's overview: the
+/// frame is what the strip shows, and a click or a drag moves it there.
 struct GridFitBar: View {
     let summary: GridFit.Summary?
     let duration: Double
     let visibleStart: Double
     let visibleLength: Double
-    let onJump: (Double) -> Void
+    /// The spot to put in the middle of the strip, while dragging.
+    let onScrub: (Double) -> Void
+    /// Where the drag let go.
+    let onEnd: (Double) -> Void
 
     /// Offsets up to this are on the lines: the kick timing itself is good
     /// to a few milliseconds.
@@ -646,19 +838,24 @@ struct GridFitBar: View {
                                       height: size.height - 4)
                     context.fill(Path(rect), with: .color(Self.color(window)))
                 }
-                guard visibleLength < duration else { return }
                 let visible = CGRect(x: CGFloat(visibleStart) * scale, y: 0.5,
                                      width: max(2, CGFloat(visibleLength) * scale), height: size.height - 1)
                 context.stroke(Path(visible), with: .color(.white), lineWidth: 1)
             }
             .contentShape(Rectangle())
-            .onTapGesture { location in
-                onJump(Double(location.x / max(geometry.size.width, 1)) * duration)
-            }
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { value in onScrub(seconds(value.location.x, width: geometry.size.width)) }
+                    .onEnded { value in onEnd(seconds(value.location.x, width: geometry.size.width)) }
+            )
         }
         .clipShape(RoundedRectangle(cornerRadius: 3))
-        .help(summary == nil ? "Measuring the kicks…"
-              : "How well the grid holds, eight bars at a time: green on the kicks, yellow and red beside them, grey without a steady kick. Click to show that part.")
+        .help(summary == nil ? "Measuring the kicks… Drag to move the view along the song."
+              : "How well the grid holds, eight bars at a time: green on the kicks, yellow and red beside them, grey without a steady kick. The frame is what the strip shows: click or drag to move it.")
+    }
+
+    private func seconds(_ x: CGFloat, width: CGFloat) -> Double {
+        min(max(Double(x / max(width, 1)), 0), 1) * duration
     }
 
     static func color(_ window: GridFit.Window) -> Color {
@@ -668,4 +865,25 @@ struct GridFitBar: View {
         if off <= GridFit.driftBeyond { return Color(red: 0.95, green: 0.8, blue: 0.2) }
         return Color(red: 0.95, green: 0.3, blue: 0.3)
     }
+}
+
+/// A label with its title, or - where there is no room - only its symbol.
+struct AdaptiveLabelStyle: LabelStyle {
+    let iconOnly: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        if iconOnly {
+            configuration.icon
+        } else {
+            HStack(spacing: 4) {
+                configuration.icon
+                configuration.title
+            }
+            .fixedSize()
+        }
+    }
+}
+
+extension LabelStyle where Self == AdaptiveLabelStyle {
+    static func adaptive(iconOnly: Bool) -> AdaptiveLabelStyle { AdaptiveLabelStyle(iconOnly: iconOnly) }
 }

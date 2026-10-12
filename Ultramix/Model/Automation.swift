@@ -282,12 +282,17 @@ nonisolated struct LaneSettings: Codable, Sendable, Equatable {
     /// a mix looks the same wherever it is opened and a change is undoable.
     var color: String?
 
-    /// Each lane's own colour - blue, orange, purple - which is what a mix
-    /// that never chose one shows. FA9933 was 2.17:1 on the light
-    /// background, too faint to read; DD7100 keeps the hue and reaches
-    /// 3.26:1 there (5.11:1 on dark). All three are held to 3:1 on both in
-    /// the harness.
-    static let defaultColors = ["4294FA", "DD7100", "B870F5"]
+    /// Each lane's own colour - blue, orange, purple, then green, pink and
+    /// gold for lanes 4 to 6 - which is what a mix that never chose one
+    /// shows. FA9933 was 2.17:1 on the light background, too faint to read;
+    /// DD7100 keeps the hue and reaches 3.26:1 there (5.11:1 on dark). All
+    /// six are held to 3:1 on both in the harness.
+    static let defaultColors = ["4294FA", "DD7100", "B870F5", "2FA866", "E0457B", "A88A1F"]
+
+    /// A lane's own colour; the list repeats past its end.
+    static func defaultColor(_ lane: Int) -> String {
+        defaultColors[((lane % defaultColors.count) + defaultColors.count) % defaultColors.count]
+    }
 
     init() {}
 

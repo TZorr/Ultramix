@@ -41,7 +41,7 @@ nonisolated final class MixRenderer {
     private let partLeft: [UnsafeMutablePointer<Float>]
     private let partRight: [UnsafeMutablePointer<Float>]
     private var parts: [LaneState]
-    private static let partCount = Clip.laneCount * Stem.allCases.count
+    private static let partCount = Clip.maxLanes * Stem.allCases.count
 
     private var limiterGain: Float = 1
     private let attack: Float
@@ -73,9 +73,11 @@ nonisolated final class MixRenderer {
     }
 
     init() {
-        laneLeft = (0..<Clip.laneCount).map { _ in .allocate(capacity: Self.maxBlock) }
-        laneRight = (0..<Clip.laneCount).map { _ in .allocate(capacity: Self.maxBlock) }
-        lanes = (0..<Clip.laneCount).map { _ in LaneState() }
+        // For every lane a mix can have, once: a lane added while the mix
+        // plays must find its bus here - the audio thread never allocates.
+        laneLeft = (0..<Clip.maxLanes).map { _ in .allocate(capacity: Self.maxBlock) }
+        laneRight = (0..<Clip.maxLanes).map { _ in .allocate(capacity: Self.maxBlock) }
+        lanes = (0..<Clip.maxLanes).map { _ in LaneState() }
         partLeft = (0..<Self.partCount).map { _ in .allocate(capacity: Self.maxBlock) }
         partRight = (0..<Self.partCount).map { _ in .allocate(capacity: Self.maxBlock) }
         parts = (0..<Self.partCount).map { _ in LaneState() }
@@ -129,7 +131,7 @@ nonisolated final class MixRenderer {
 
     private func renderBlock(plan: RenderPlan, laneMask: Int, from: Int, count: Int,
                              left: UnsafeMutablePointer<Float>, right: UnsafeMutablePointer<Float>) {
-        for lane in 0..<Clip.laneCount {
+        for lane in 0..<Clip.maxLanes {
             laneLeft[lane].update(repeating: 0, count: count)
             laneRight[lane].update(repeating: 0, count: count)
         }
@@ -158,11 +160,11 @@ nonisolated final class MixRenderer {
         }
         left.update(repeating: 0, count: count)
         right.update(repeating: 0, count: count)
-        let knobWord = knobs?.load()
-        for lane in 0..<Clip.laneCount where laneMask & (1 << lane) != 0 {
+        let knobWords = knobs?.load()
+        for lane in 0..<Clip.maxLanes where laneMask & (1 << lane) != 0 {
             lanes[lane].process(plan: plan.lanes[lane], tempo: plan.tempo, from: from, count: count,
                                 left: laneLeft[lane], right: laneRight[lane], outLeft: left, outRight: right,
-                                knobs: knobWord.map { KnobTargets(word: $0, lane: lane) })
+                                knobs: knobWords.map { KnobTargets(words: $0, lane: lane) })
         }
         limit(left: left, right: right, count: count)
         loudness.process(left: left, right: right, count: count)
@@ -330,9 +332,9 @@ nonisolated struct KnobTargets {
     var left: Float
     var right: Float
 
-    init(word: UInt64, lane: Int) {
-        let a = LaneKnobMath.unpack(word, slot: LaneKnobMath.slot(lane: lane, knob: 0))
-        let b = LaneKnobMath.unpack(word, slot: LaneKnobMath.slot(lane: lane, knob: 1))
+    init(words: KnobWords, lane: Int) {
+        let a = LaneKnobMath.unpack(words, slot: LaneKnobMath.slot(lane: lane, knob: 0))
+        let b = LaneKnobMath.unpack(words, slot: LaneKnobMath.slot(lane: lane, knob: 1))
         filter = (LaneKnobMath.filterPosition(a), LaneKnobMath.filterPosition(b))
         let ga = LaneKnobMath.gains(a), gb = LaneKnobMath.gains(b)
         left = Float(ga.left * gb.left)

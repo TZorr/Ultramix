@@ -306,7 +306,7 @@ struct KnobSettingsRow: View {
     var knobs = LaneKnobController.shared
 
     var body: some View {
-        let lane = LaneStyle.names[slot / LaneKnobMath.knobsPerLane]
+        let lane = LaneStyle.number(slot / LaneKnobMath.knobsPerLane)
         let assignment = knobs.setup.slots[slot]
         let learning = knobs.learning == slot
         LabeledContent("Lane \(lane) · \(slot % LaneKnobMath.knobsPerLane + 1)") {

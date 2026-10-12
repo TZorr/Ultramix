@@ -29,7 +29,7 @@ nonisolated final class AudioCore: @unchecked Sendable {
     let position = Atomic<Int>(0)
     /// A seek waiting for the callback; −1 when none.
     let seekTarget = Atomic<Int>(-1)
-    let laneMask = Atomic<Int>(0b111)
+    let laneMask = Atomic<Int>(0b11)
     let plan = Atomic<UnsafeRawPointer?>(nil)
     /// Generation of the plan the callback last rendered with.
     let planInUse = Atomic<Int>(-1)

@@ -28,15 +28,35 @@ nonisolated struct TransitionMark: Identifiable, Codable, Sendable, Equatable {
     /// The style written there. Nil for a beatmix's handover, which is no
     /// style; moving one writes the current style.
     var style: TransitionStyle?
+    /// Moves chosen one by one in the inspector, in place of a style. A
+    /// build that does not know them reads the bar as a handover; the points
+    /// it wrote play the same there.
+    var custom: TransitionMoves?
 
-    init(id: UUID = UUID(), start: Double, end: Double, style: TransitionStyle?) {
+    init(id: UUID = UUID(), start: Double, end: Double, style: TransitionStyle?, custom: TransitionMoves? = nil) {
         self.id = id
         self.start = start
         self.end = end
-        self.style = style
+        self.style = custom == nil ? style : nil
+        self.custom = custom
     }
 
-    enum CodingKeys: String, CodingKey { case id, start, end, style }
+    init(id: UUID = UUID(), start: Double, end: Double, choice: TransitionChoice?) {
+        switch choice {
+        case .preset(let style): self.init(id: id, start: start, end: end, style: style)
+        case .custom(let moves): self.init(id: id, start: start, end: end, style: nil, custom: moves)
+        case nil: self.init(id: id, start: start, end: end, style: nil)
+        }
+    }
+
+    /// What the bar writes: its own moves, its style, or - a beatmix's
+    /// handover - nothing of its own.
+    var choice: TransitionChoice? {
+        if let custom { return .custom(custom) }
+        return style.map { .preset($0) }
+    }
+
+    enum CodingKeys: String, CodingKey { case id, start, end, style, custom }
 
     func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
@@ -44,6 +64,7 @@ nonisolated struct TransitionMark: Identifiable, Codable, Sendable, Equatable {
         try c.encode(start, forKey: .start)
         try c.encode(end, forKey: .end)
         try c.encodeIfPresent(style?.rawValue, forKey: .style)
+        try c.encodeIfPresent(custom, forKey: .custom)
     }
 
     /// A style this build does not know reads as none rather than failing
@@ -54,6 +75,7 @@ nonisolated struct TransitionMark: Identifiable, Codable, Sendable, Equatable {
         start = try c.decode(Double.self, forKey: .start)
         end = try c.decode(Double.self, forKey: .end)
         style = (try? c.decodeIfPresent(String.self, forKey: .style)).flatMap { $0 }.flatMap(TransitionStyle.init)
+        custom = (try? c.decodeIfPresent(TransitionMoves.self, forKey: .custom)).flatMap { $0 }
     }
 }
 
@@ -69,9 +91,15 @@ nonisolated struct PlacedMark: Equatable, Sendable {
     let start: Double
     let end: Double
     let style: TransitionStyle?
+    let custom: TransitionMoves?
     let locked: Bool
 
-    var title: String { style?.title ?? "Beatmix" }
+    var choice: TransitionChoice? {
+        if let custom { return .custom(custom) }
+        return style.map { .preset($0) }
+    }
+
+    var title: String { choice?.title ?? "Beatmix" }
 }
 
 nonisolated extension MixDocument {
@@ -89,7 +117,7 @@ nonisolated extension MixDocument {
                 let (start, end) = (anchor + mark.start, anchor + mark.end)
                 guard end > shape.start + 1e-6, start < shape.end - 1e-6 else { continue }
                 result.append(PlacedMark(ref: MarkRef(clip: clip.id, id: mark.id), start: start, end: end,
-                                         style: mark.style, locked: clip.locked))
+                                         style: mark.style, custom: mark.custom, locked: clip.locked))
             }
         }
         return result.sorted { $0.start < $1.start }
@@ -120,7 +148,7 @@ nonisolated extension MixDocument {
         guard let owner = editable(transition.incoming) ?? editable(transition.outgoing) else {
             throw EditError("Both clips of the transition are locked.")
         }
-        write(style, transition, from: start, to: end)
+        write(.preset(style), transition, from: start, to: end)
         let anchor = Double(clips[owner].anchorBeat)
         let mark = TransitionMark(start: start - anchor, end: end - anchor, style: style)
         clips[owner].automation.transitions.append(mark)
@@ -149,8 +177,8 @@ nonisolated extension MixDocument {
         if let old = self.transition(over: oldStart, oldEnd, grids: grids) {
             for id in [old.outgoing, old.incoming] { clearAutomation(clip: id, from: oldStart, to: oldEnd) }
         }
-        let style = mark.style ?? currentStyle
-        write(style, transition, from: start, to: end)
+        let choice = mark.choice ?? .preset(currentStyle)
+        write(choice, transition, from: start, to: end)
 
         clips[i].automation.transitions.remove(at: k)
         guard let owner = editable(transition.incoming) ?? editable(transition.outgoing) else {
@@ -158,17 +186,31 @@ nonisolated extension MixDocument {
         }
         let ownerAnchor = Double(clips[owner].anchorBeat)
         clips[owner].automation.transitions.append(
-            TransitionMark(id: mark.id, start: start - ownerAnchor, end: end - ownerAnchor, style: style))
+            TransitionMark(id: mark.id, start: start - ownerAnchor, end: end - ownerAnchor, choice: choice))
         return MarkRef(clip: clips[owner].id, id: mark.id)
     }
 
     /// Writes another style over a mark's range, in place of what was there.
     mutating func applyStyle(_ style: TransitionStyle, toMark ref: MarkRef, grids: GridLookup) throws {
+        try apply(.preset(style), toMark: ref, grids: grids)
+    }
+
+    /// Writes a style or custom moves over a mark's range, in place of what
+    /// was there; the mark keeps what it was given.
+    mutating func apply(_ choice: TransitionChoice, toMark ref: MarkRef, grids: GridLookup) throws {
         guard let (i, k) = locate(ref) else { throw EditError("That transition is gone.") }
         let anchor = Double(clips[i].anchorBeat)
         let mark = clips[i].automation.transitions[k]
-        clips[i].automation.transitions[k].style = style
-        try moveMark(ref, from: anchor + mark.start, to: anchor + mark.end, currentStyle: style, grids: grids)
+        switch choice {
+        case .preset(let style):
+            clips[i].automation.transitions[k].style = style
+            clips[i].automation.transitions[k].custom = nil
+        case .custom(let moves):
+            clips[i].automation.transitions[k].style = nil
+            clips[i].automation.transitions[k].custom = moves
+        }
+        let current: TransitionStyle = if case .preset(let style) = choice { style } else { .crossfade }
+        try moveMark(ref, from: anchor + mark.start, to: anchor + mark.end, currentStyle: current, grids: grids)
     }
 
     /// Deletes a mark, and with it every point and movement inside its
@@ -211,9 +253,9 @@ nonisolated extension MixDocument {
     }
 
     /// Both sides of a transition, written over `start…end`.
-    private mutating func write(_ style: TransitionStyle, _ transition: Transition, from start: Double, to end: Double) {
-        apply(style, clip: transition.outgoing, from: start, to: end, incoming: false)
-        apply(style, clip: transition.incoming, from: start, to: end, incoming: true)
+    private mutating func write(_ choice: TransitionChoice, _ transition: Transition, from start: Double, to end: Double) {
+        apply(choice.moves, clip: transition.outgoing, from: start, to: end, incoming: false)
+        apply(choice.moves, clip: transition.incoming, from: start, to: end, incoming: true)
     }
 
     /// Takes every point inside `start…end` (timeline beats) off a clip,

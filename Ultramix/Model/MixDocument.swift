@@ -43,7 +43,14 @@ nonisolated struct MixDocument: Codable, Sendable, Equatable {
     /// 4: clips hold their stems (`parts`), each with its own level, mute
     /// and automation. A v3 build would drop them and could save over the
     /// mix without them. A v3 mix opens here as it always did.
-    static let formatVersion = 4
+    ///
+    /// 5: more than three lanes. A v4 build cuts every mix to three lanes
+    /// and drops the clips on the others, so a mix with four or more is
+    /// written as 5 and refused there. A mix with two or three lanes is
+    /// still written as 4: a v4 build opens it with three, which loses
+    /// nothing.
+    static let formatVersion = 5
+    static let lanesVersion = 5
 
     /// The tempo at beat 0, until a clip's target says otherwise. Set from
     /// the first track placed, so a new mix starts at that track's tempo
@@ -67,12 +74,18 @@ nonisolated struct MixDocument: Codable, Sendable, Equatable {
     var masterBPM: Double?
     var masterLocked = false
 
-    init(projectBPM: Double = 124) {
+    init(projectBPM: Double = 124, laneCount: Int = Clip.defaultLanes) {
         self.projectBPM = projectBPM
         clips = []
-        lanes = Array(repeating: LaneSettings(), count: Clip.laneCount)
+        lanes = Array(repeating: LaneSettings(), count: min(max(laneCount, Clip.defaultLanes), Clip.maxLanes))
         tracks = []
     }
+
+    var laneCount: Int { lanes.count }
+
+    /// The version this mix needs: 5 only with more lanes than a v4 build
+    /// can hold (see `formatVersion`).
+    var writtenVersion: Int { lanes.count > 3 ? Self.lanesVersion : 4 }
 
     // MARK: - Tempo
 
@@ -113,7 +126,7 @@ nonisolated struct MixDocument: Codable, Sendable, Equatable {
     func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(Self.format, forKey: .format)
-        try c.encode(Self.formatVersion, forKey: .version)
+        try c.encode(writtenVersion, forKey: .version)
         try c.encode(projectBPM, forKey: .projectBPM)
         try c.encode(clips, forKey: .clips)
         try c.encode(lanes, forKey: .lanes)
@@ -133,15 +146,23 @@ nonisolated struct MixDocument: Codable, Sendable, Equatable {
         }
         projectBPM = try c.decodeIfPresent(Double.self, forKey: .projectBPM) ?? 124
         clips = try c.decodeIfPresent([Clip].self, forKey: .clips) ?? []
-        var lanes = try c.decodeIfPresent([LaneSettings].self, forKey: .lanes) ?? []
-        // Always exactly three: a file with fewer gains empty lanes, and one
-        // with more (hand-edited) cannot put clips where no lane is drawn.
-        while lanes.count < Clip.laneCount { lanes.append(LaneSettings()) }
-        self.lanes = Array(lanes.prefix(Clip.laneCount))
+        // As many lanes as stored - every version before lanes could be
+        // added stored its three - and at least as many as the clips use,
+        // at least two, at most six: a clip on a lane that is not drawn
+        // could not be seen or reached. A mix with no lanes at all is from
+        // the first version, which had three.
+        let stored = try c.decodeIfPresent([LaneSettings].self, forKey: .lanes)
+        var lanes = stored ?? []
+        let used = (clips.map(\.lane).filter { $0 < Clip.maxLanes }.max() ?? -1) + 1
+        let wanted = stored == nil
+            ? 3
+            : min(max(lanes.count, used, Clip.defaultLanes), Clip.maxLanes)
+        while lanes.count < wanted { lanes.append(LaneSettings()) }
+        self.lanes = Array(lanes.prefix(wanted))
         tracks = try c.decodeIfPresent([TrackReference].self, forKey: .tracks) ?? []
         masterBPM = try c.decodeIfPresent(Double.self, forKey: .masterBPM)
         masterLocked = try c.decodeIfPresent(Bool.self, forKey: .masterLocked) ?? false
-        clips = clips.filter { (0..<Clip.laneCount).contains($0.lane) }
+        clips = clips.filter { self.lanes.indices.contains($0.lane) }
     }
 
     func fileData() throws -> Data {

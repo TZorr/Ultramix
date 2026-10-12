@@ -214,8 +214,11 @@ nonisolated final class RenderPlan: @unchecked Sendable {
         self.segments = segments
         self.outOfRange = outOfRange
         self.partBuses = partBuses
-        lanes = (0..<Clip.laneCount).map { LanePlan(document: document, lane: $0, grids: grids) }
-        partLanes = (0..<Clip.laneCount).map { lane in
+        // For every lane the renderer has, whether the mix has it or not: the
+        // renderer indexes them without asking, and a lane the mix does not
+        // have is never in the lane mask.
+        lanes = (0..<Clip.maxLanes).map { LanePlan(document: document, lane: $0, grids: grids) }
+        partLanes = (0..<Clip.maxLanes).map { lane in
             Stem.allCases.map { LanePlan(document: document, lane: lane, grids: grids, part: $0) }
         }
         endFrame = frame(document.endBeat(grids))

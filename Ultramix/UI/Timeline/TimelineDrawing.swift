@@ -109,14 +109,14 @@ struct TimelineSnapshot {
         let document = session.document
         tempo = session.tempo
         master = document.masterLocked ? document.masterBPM : nil
-        laneColors = (0..<Clip.laneCount).map { LaneStyle.color($0, document.lanes) }
+        laneColors = (0..<Clip.maxLanes).map { LaneStyle.color($0, document.lanes) }
         laneMask = session.laneMask
         self.tool = tool
         self.draft = draft
         let grids = session.grids
         var curves = session.plan?.lanes
-            ?? (0..<Clip.laneCount).map { LanePlan(document: document, lane: $0, grids: grids) }
-        var partCurves = session.plan?.partLanes ?? (0..<Clip.laneCount).map { lane in
+            ?? (0..<Clip.maxLanes).map { LanePlan(document: document, lane: $0, grids: grids) }
+        var partCurves = session.plan?.partLanes ?? (0..<Clip.maxLanes).map { lane in
             Stem.allCases.map { LanePlan(document: document, lane: lane, grids: grids, part: $0) }
         }
         if let draft {
@@ -180,13 +180,18 @@ enum TimelineDrawing {
                      with: .color(Color.primary.opacity(0.05)))
         context.fill(Path(layout.tempoRect), with: .color(Color.primary.opacity(0.025)))
         var separators = Path()
-        for lane in 0..<Clip.laneCount {
+        var bottom = layout.lanesTop
+        for lane in layout.laneOrder {
             let rect = layout.laneRect(lane)
             let audible = snapshot.laneMask & (1 << lane) != 0
             context.fill(Path(rect), with: .color(audible ? snapshot.laneColors[lane].opacity(0.035) : Color.black.opacity(0.14)))
             separators.move(to: CGPoint(x: 0, y: rect.minY))
             separators.addLine(to: CGPoint(x: size.width, y: rect.minY))
+            bottom = max(bottom, rect.maxY)
         }
+        // Under the last lane, the strip beside "+ Lane" stays empty.
+        separators.move(to: CGPoint(x: 0, y: bottom))
+        separators.addLine(to: CGPoint(x: size.width, y: bottom))
         for y in [TimelineLayout.rulerHeight, layout.tempoRect.minY] {
             separators.move(to: CGPoint(x: 0, y: y))
             separators.addLine(to: CGPoint(x: size.width, y: y))
@@ -232,7 +237,7 @@ enum TimelineDrawing {
             let visible = layout.visibleBeats
             for beat in max(0, Int(visible.lowerBound))...max(0, Int(visible.upperBound)) where beat % 4 != 0 {
                 let x = layout.x(Double(beat))
-                faint.move(to: CGPoint(x: x, y: TimelineLayout.lanesTop))
+                faint.move(to: CGPoint(x: x, y: layout.lanesTop))
                 faint.addLine(to: CGPoint(x: x, y: size.height))
             }
         }
@@ -277,8 +282,11 @@ enum TimelineDrawing {
             guard rect.maxX >= 0, rect.minX <= size.width else { continue }
             let picked = mark.ref == snapshot.selectedMark
             let shape = Path(roundedRect: rect, cornerRadius: 3)
-            context.fill(shape, with: .color(accent.opacity(mark.locked ? 0.12 : picked ? 0.55 : 0.28)))
-            context.stroke(shape, with: .color(accent.opacity(mark.locked ? 0.3 : picked ? 1 : 0.6)),
+            // Neutral until picked: the accent marks what is selected, and a
+            // strip of accent bars said nothing about any of them.
+            let tone = picked ? accent : Color.primary
+            context.fill(shape, with: .color(tone.opacity(mark.locked ? 0.08 : picked ? 0.55 : 0.16)))
+            context.stroke(shape, with: .color(tone.opacity(mark.locked ? 0.25 : picked ? 1 : 0.45)),
                            lineWidth: picked ? 1.5 : 1)
             if !mark.locked && rect.width > 14 {
                 var grips = Path()
@@ -316,7 +324,7 @@ enum TimelineDrawing {
         guard let range else { return }
         let (x0, x1) = (layout.x(range.lowerBound), layout.x(range.upperBound))
         guard x1 >= 0, x0 <= size.width else { return }
-        let top = TimelineLayout.lanesTop
+        let top = layout.lanesTop
         context.fill(Path(CGRect(x: x0, y: top, width: x1 - x0, height: size.height - top)),
                      with: .color(snapshot.accent.opacity(0.07)))
         var edges = Path()
@@ -356,7 +364,7 @@ enum TimelineDrawing {
     }
 
     static func tempoY(_ bpm: Double, scale: ClosedRange<Double>, layout: TimelineLayout) -> CGFloat {
-        let rect = layout.tempoRect.insetBy(dx: 0, dy: 10)
+        let rect = layout.tempoRect.insetBy(dx: 0, dy: min(10, layout.tempoRect.height * 0.2))
         let unit = (bpm - scale.lowerBound) / (scale.upperBound - scale.lowerBound)
         return rect.maxY - CGFloat(unit) * rect.height
     }
@@ -397,14 +405,19 @@ enum TimelineDrawing {
             context.stroke(diamond, with: .color(snapshot.laneColors[clip.lane]), lineWidth: clip.selected ? 2.2 : 1.4)
         }
 
+        // Folded to a strip there is no room for numbers: the curve and its
+        // points stay, and the header says the tempo.
+        let labelled = layout.tempoRect.height >= 60
         // The scale first: its two numbers are in the corners, and the
         // point labels keep clear of them.
         let top = context.resolve(Text(String(format: "%.0f", scale.upperBound)).font(.system(size: 9)).foregroundStyle(.tertiary))
         let low = context.resolve(Text(String(format: "%.0f", scale.lowerBound)).font(.system(size: 9)).foregroundStyle(.tertiary))
         let topSize = top.measure(in: size)
         let lowSize = low.measure(in: size)
-        context.draw(top, at: CGPoint(x: 4, y: layout.tempoRect.minY + 2), anchor: .topLeading)
-        context.draw(low, at: CGPoint(x: 4, y: layout.tempoRect.maxY - 2), anchor: .bottomLeading)
+        if labelled {
+            context.draw(top, at: CGPoint(x: 4, y: layout.tempoRect.minY + 2), anchor: .topLeading)
+            context.draw(low, at: CGPoint(x: 4, y: layout.tempoRect.maxY - 2), anchor: .bottomLeading)
+        }
         let corners = [
             CGRect(x: 4, y: layout.tempoRect.minY + 2, width: topSize.width, height: topSize.height),
             CGRect(x: 4, y: layout.tempoRect.maxY - 2 - lowSize.height, width: lowSize.width, height: lowSize.height),
@@ -426,7 +439,7 @@ enum TimelineDrawing {
             let dot = Path(ellipseIn: CGRect(x: point.x - 5, y: point.y - 5, width: 10, height: 10))
             context.fill(dot, with: .color(item.clip.targetBPM == nil && snapshot.master == nil ? Color(nsColor: .windowBackgroundColor) : color))
             context.stroke(dot, with: .color(color), lineWidth: item.clip.selected ? 2.2 : 1.4)
-            guard slot != .hidden else { continue }
+            guard labelled, slot != .hidden else { continue }
             let rect = TempoLabels.rect(slot, for: item.point)
             context.draw(item.label, at: CGPoint(x: rect.minX, y: rect.midY), anchor: .leading)
         }

@@ -165,7 +165,7 @@ section("clip geometry: a tempo lowered after trimming cannot turn a clip inside
 // MARK: - Editing
 
 section("add: first clip sets the tempo, the next chain on") {
-    var doc = MixDocument()
+    var doc = MixDocument(laneCount: 3)
     let a = try! doc.addClip(trackID: trackA, grid: testGrid, grids: grids)
     check(doc.projectBPM == 120, "project tempo from the first track")
     let first = doc.clips[0]
@@ -178,7 +178,7 @@ section("add: first clip sets the tempo, the next chain on") {
 }
 
 section("move: snaps to bars, refuses overlap, carries automation") {
-    var doc = MixDocument()
+    var doc = MixDocument(laneCount: 3)
     let a = try! doc.addClip(trackID: trackA, grid: testGrid, lane: 0, startBeat: 0, grids: grids)
     let b = try! doc.addClip(trackID: trackB, grid: gridB, lane: 1, startBeat: 100, grids: grids)
     // b: anchor 100, from 99.47. One node: the clip plays −6 dB throughout.
@@ -205,7 +205,7 @@ section("move: snaps to bars, refuses overlap, carries automation") {
 }
 
 section("nudge: a beat at a time, with its tempo point and automation") {
-    var doc = MixDocument()
+    var doc = MixDocument(laneCount: 3)
     let a = try! doc.addClip(trackID: trackA, grid: testGrid, lane: 0, startBeat: 16, grids: grids)
     check(doc.clips[0].anchorBeat == 20, "starts on bar line 20: \(doc.clips[0].anchorBeat)")
     doc.addAutomationNode(clip: a, kind: .volume, beat: 30, value: -6, grids: grids)
@@ -226,7 +226,7 @@ section("nudge: a beat at a time, with its tempo point and automation") {
     check((try? doc.nudgeClips([a], byBeats: -1, grids: grids)) == nil && doc == atStart, "no nudge past the start")
 
     // Into a neighbour: refused. Left spans 2…242, right 244…484.
-    var two = MixDocument()
+    var two = MixDocument(laneCount: 3)
     let left = try! two.addClip(trackID: trackA, grid: testGrid, lane: 0, startBeat: 0, grids: grids)
     two.clips.append(Clip(trackID: trackA, lane: 0, anchorBeat: 246))
     let right = two.clips[1].id
@@ -247,7 +247,7 @@ section("nudge: a beat at a time, with its tempo point and automation") {
 section("move mode: what a drag snaps to") {
     check(MoveMode.off.step == nil && MoveMode.free.step == 1 && MoveMode.half.step == 2 && MoveMode.full.step == 4,
           "steps: off none, free 1, half 2, full 4")
-    var doc = MixDocument()
+    var doc = MixDocument(laneCount: 3)
     let a = try! doc.addClip(trackID: trackA, grid: testGrid, lane: 0, startBeat: 16, grids: grids)
     try! doc.moveClips([a], dragging: a, anchorBeat: 26.6, lane: 0, step: 1, grids: grids)
     check(doc.clips[0].anchorBeat == 27, "free: the nearest beat: \(doc.clips[0].anchorBeat)")
@@ -327,7 +327,7 @@ section("tempo strip: point labels do not overlap") {
 }
 
 section("lock: a locked clip keeps its place") {
-    var doc = MixDocument()
+    var doc = MixDocument(laneCount: 3)
     let a = try! doc.addClip(trackID: trackA, grid: testGrid, lane: 0, startBeat: 16, grids: grids)
     let b = try! doc.addClip(trackID: trackB, grid: gridB, lane: 1, startBeat: 16, grids: grids)
     doc.setLocked(a, true)
@@ -365,7 +365,7 @@ section("lock: a locked clip keeps its place") {
 }
 
 section("drag: the whole selection travels together") {
-    var doc = MixDocument()
+    var doc = MixDocument(laneCount: 3)
     let a = try! doc.addClip(trackID: trackA, grid: testGrid, lane: 0, startBeat: 0, grids: grids)
     let b = try! doc.addClip(trackID: trackB, grid: gridB, lane: 1, startBeat: 400, grids: grids)
     let anchorA = doc.clips[0].anchorBeat
@@ -388,7 +388,7 @@ section("drag: the whole selection travels together") {
 
     // All or nothing: a neighbour in the way of b stops the pair. b is 128
     // beats long, so a clip four beats past its tail blocks a drag of eight.
-    var pair = MixDocument()
+    var pair = MixDocument(laneCount: 3)
     let left = try! pair.addClip(trackID: trackA, grid: testGrid, lane: 0, startBeat: 0, grids: grids)
     let right = try! pair.addClip(trackID: trackB, grid: gridB, lane: 1, startBeat: 400, grids: grids)
     pair.clips.append(Clip(trackID: trackB, lane: 1, anchorBeat: pair.clips[1].anchorBeat + 132))
@@ -401,7 +401,7 @@ section("drag: the whole selection travels together") {
     check(refused && pair == blocked, "a blocked selection does not move at all")
 
     // Neither does one that would push a clip before the start of the mix.
-    var early = MixDocument()
+    var early = MixDocument(laneCount: 3)
     let first = try! early.addClip(trackID: trackA, grid: testGrid, lane: 0, startBeat: 0, grids: grids)
     let second = try! early.addClip(trackID: trackB, grid: gridB, lane: 1, startBeat: 400, grids: grids)
     let atStart = early
@@ -411,7 +411,7 @@ section("drag: the whole selection travels together") {
     check(refused && early == atStart, "nothing is dragged off the front of the mix")
 
     // One clip is a selection of one, and lands on a bar line as before.
-    var single = MixDocument()
+    var single = MixDocument(laneCount: 3)
     let only = try! single.addClip(trackID: trackA, grid: testGrid, lane: 0, startBeat: 0, grids: grids)
     try! single.moveClips([only], dragging: only, anchorBeat: 101.4, lane: 2, grids: grids)
     check(single.clips[0].anchorBeat == 100 && single.clips[0].lane == 2, "single: \(single.clips[0])")
@@ -419,7 +419,7 @@ section("drag: the whole selection travels together") {
 
 section("delete: a clip takes its automation, and only its own") {
     // A crossfade: the deleted clip's fade-out goes, the partner's fade-in stays.
-    var mix = MixDocument()
+    var mix = MixDocument(laneCount: 3)
     let outgoing = try! mix.addClip(trackID: trackA, grid: testGrid, lane: 0, startBeat: 0, grids: grids)
     try! mix.addClip(trackID: trackB, grid: gridB, lane: 1, startBeat: 200, grids: grids)
     try! mix.autoCrossfade(nil, grids: grids)
@@ -432,7 +432,7 @@ section("delete: a clip takes its automation, and only its own") {
 
 section("clip automation: ⌥⌫ empties the clip, the hidden part included, and leaves it") {
     // a: anchor 4, 2…242; b on lane B.
-    var doc = MixDocument()
+    var doc = MixDocument(laneCount: 3)
     let a = try! doc.addClip(trackID: trackA, grid: testGrid, lane: 0, startBeat: 0, grids: grids)
     try! doc.addClip(trackID: trackB, grid: gridB, lane: 1, startBeat: 0, grids: grids)
     doc.addAutomationNode(clip: a, kind: .volume, beat: 20, value: -6, grids: grids)
@@ -457,7 +457,7 @@ section("clip automation: ⌥⌫ empties the clip, the hidden part included, and
 }
 
 section("lock: a locked clip's automation stays as it is") {
-    var doc = MixDocument()
+    var doc = MixDocument(laneCount: 3)
     let a = try! doc.addClip(trackID: trackA, grid: testGrid, lane: 0, startBeat: 0, grids: grids)   // body 2 … 242
     let b = try! doc.addClip(trackID: trackB, grid: gridB, lane: 1, startBeat: 200, grids: grids)
     let node = doc.addAutomationNode(clip: a, kind: .volume, beat: 50, value: -6, grids: grids)!
@@ -498,7 +498,7 @@ section("lock: a locked clip's automation stays as it is") {
     check((try? doc.autoCrossfade(nil, grids: grids)) == nil && doc == both, "locked on both sides: nothing, and said")
 
     // A beatmix over a locked last clip leaves it alone and still adds.
-    var mix = MixDocument()
+    var mix = MixDocument(laneCount: 3)
     let first = try! mix.addClip(trackID: trackA, grid: testGrid, beatmix: .beats16, grids: grids)
     mix.setLocked(first, true)
     try! mix.addClip(trackID: trackB, grid: gridB, beatmix: .beats16, grids: grids)
@@ -512,7 +512,7 @@ section("lock: a locked clip's automation stays as it is") {
 section("regions: automation sounds only inside its clip") {
     // End to end on lane A after two nudges: left anchor 6, 4…244; right
     // anchor 246, 244…484.
-    var pair = MixDocument()
+    var pair = MixDocument(laneCount: 3)
     let left = try! pair.addClip(trackID: trackA, grid: testGrid, lane: 0, startBeat: 0, grids: grids)
     pair.clips.append(Clip(trackID: trackA, lane: 0, anchorBeat: 246))
     let right = pair.clips[1].id
@@ -555,7 +555,7 @@ section("regions: automation sounds only inside its clip") {
 
 section("regions: trim hides, extending restores; split, duplicate, loop") {
     // anchor 4, 2…242.
-    var doc = MixDocument()
+    var doc = MixDocument(laneCount: 3)
     let a = try! doc.addClip(trackID: trackA, grid: testGrid, lane: 0, startBeat: 0, grids: grids)
     doc.addAutomationNode(clip: a, kind: .volume, beat: 20, value: -20, grids: grids)
     doc.addAutomationNode(clip: a, kind: .volume, beat: 60, value: 0, grids: grids)
@@ -592,7 +592,7 @@ section("regions: trim hides, extending restores; split, duplicate, loop") {
     check(samples(copied, lane: 1, .volume) == samples(original, .volume), "and sounds like the original")
 
     // Looping: one curve across the whole length, not one per copy.
-    var loop = MixDocument()
+    var loop = MixDocument(laneCount: 3)
     let l = try! loop.addClip(trackID: trackA, grid: testGrid, lane: 0, startBeat: 0, grids: grids)
     loop.setLooping(l, true)
     try! loop.setLoopExtent(l, edge: .end, to: 342, grids: grids)
@@ -605,7 +605,7 @@ section("regions: trim hides, extending restores; split, duplicate, loop") {
 }
 
 section("trim: quarter beats, anchor fixed, limits") {
-    var doc = MixDocument()
+    var doc = MixDocument(laneCount: 3)
     let a = try! doc.addClip(trackID: trackA, grid: testGrid, lane: 0, startBeat: 0, grids: grids)
     // anchor 4, fileStart 2, body 2…242
     try! doc.trimClip(a, edge: .start, to: 17.13, grids: grids)
@@ -618,7 +618,7 @@ section("trim: quarter beats, anchor fixed, limits") {
 }
 
 section("split: whole beat, tempo line unchanged") {
-    var doc = MixDocument()
+    var doc = MixDocument(laneCount: 3)
     let a = try! doc.addClip(trackID: trackA, grid: testGrid, lane: 0, startBeat: 0, grids: grids)
     let b = try! doc.addClip(trackID: trackB, grid: gridB, lane: 1, startBeat: 200, grids: grids)
     doc.setTargetBPM(b, 126)
@@ -638,7 +638,7 @@ section("split: whole beat, tempo line unchanged") {
 }
 
 section("master tempo: locks the whole mix flat, gives every point back unlocked") {
-    var doc = MixDocument()
+    var doc = MixDocument(laneCount: 3)
     let a = try! doc.addClip(trackID: trackA, grid: testGrid, lane: 0, startBeat: 0, grids: grids)
     let b = try! doc.addClip(trackID: trackB, grid: gridB, lane: 1, startBeat: 200, grids: grids)
     doc.setTargetBPM(a, 122)
@@ -700,14 +700,14 @@ section("master tempo: locks the whole mix flat, gives every point back unlocked
     doc.setMasterBPM(125)
     let read = try! MixDocument.load(from: try! doc.fileData())
     check(read.masterLocked && read.masterBPM == 125, "read back locked at 125")
-    let plain = String(data: try! MixDocument().fileData(), encoding: .utf8)!
+    let plain = String(data: try! MixDocument(laneCount: 3).fileData(), encoding: .utf8)!
     check(!plain.contains("master"), "nothing written without a master")
-    let old = try! MixDocument.load(from: try! MixDocument().fileData())
+    let old = try! MixDocument.load(from: try! MixDocument(laneCount: 3).fileData())
     check(!old.masterLocked && old.masterBPM == nil, "a mix without a master opens unlocked")
 }
 
 section("ramp start: bars, before its point, travels with its clip, keeps the line through a split") {
-    var doc = MixDocument()
+    var doc = MixDocument(laneCount: 3)
     let b = try! doc.addClip(trackID: trackB, grid: gridB, lane: 1, startBeat: 100, grids: grids)
     let anchor = doc.clips[0].anchorBeat
     doc.setTargetBPM(b, 126)
@@ -743,7 +743,7 @@ section("ramp start: bars, before its point, travels with its clip, keeps the li
 }
 
 section("duplicate: below, above, after, before") {
-    var doc = MixDocument()
+    var doc = MixDocument(laneCount: 3)
     let a = try! doc.addClip(trackID: trackB, grid: gridB, lane: 0, startBeat: 0, grids: grids)
     // 128 beats + pre-roll-trimmed start; length 128 → step 128.
     let c1 = try! doc.duplicateClip(a, grids: grids)
@@ -757,7 +757,7 @@ section("duplicate: below, above, after, before") {
 }
 
 section("loop: extent and switching off") {
-    var doc = MixDocument()
+    var doc = MixDocument(laneCount: 3)
     let a = try! doc.addClip(trackID: trackA, grid: testGrid, lane: 0, startBeat: 64, grids: grids)
     doc.setLooping(a, true)
     try! doc.trimClip(a, edge: .end, to: 500.1, grids: grids)
@@ -816,7 +816,7 @@ section("automation: fader taper, curves, gestures") {
 // MARK: - Document
 
 section("document: round-trip and old files") {
-    var doc = MixDocument(projectBPM: 126.5)
+    var doc = MixDocument(projectBPM: 126.5, laneCount: 3)
     var drawn = ClipAutomation()
     drawn.pan = [AutomationNode(beat: 4, value: -0.5, tension: 0.2)]
     drawn.gestures = [AutomationGesture(kind: .pan, start: 1, end: 9, shape: .triangle, period: 4, low: -1, high: 1)]
@@ -836,7 +836,7 @@ section("document: round-trip and old files") {
     // the Mac that made it into a field nobody reads.
     check(!text.contains("bookmark"), "a track reference writes no bookmark")
     check(!text.contains("\"volume\"") && !text.contains("\"lpf\"") && !text.contains("\"hpf\""), "empty kinds leave no key")
-    var bare = MixDocument()
+    var bare = MixDocument(laneCount: 3)
     bare.clips = [Clip(trackID: trackA, lane: 0, anchorBeat: 4)]
     check(!String(data: try! bare.fileData(), encoding: .utf8)!.contains("automation"), "a clip with nothing drawn writes no key")
 
@@ -851,7 +851,7 @@ section("document: round-trip and old files") {
     check(first?.clips.first?.automation.isEmpty == true, "a v1 mix opens with no automation")
     check(first?.lanes.map(\.muted) == [true, false, false] && first?.lanes[1].solo == true && first?.lanes[2].color == "FF0000",
           "and its lanes' switches and colours")
-    check((try? MixDocument.load(from: Data(#"{"format":"ultramix-mix","version":5}"#.utf8))) == nil, "format 5 is refused")
+    check((try? MixDocument.load(from: Data(#"{"format":"ultramix-mix","version":6}"#.utf8))) == nil, "format 6 is refused")
     check((try? MixDocument.load(from: Data(#"{"format":"ultramix-mix","version":3}"#.utf8))) != nil, "format 3 still opens")
 
     // A mix written before the bookmark was dropped: the key is passed over
@@ -887,15 +887,69 @@ section("document: round-trip and old files") {
     """
     let legacy = try? MixDocument.load(from: Data(old.utf8))
     check(legacy?.clips.first?.tempoAnchorBeat == 8, "missing keys fall back to defaults")
-    check(legacy?.lanes.count == 3, "always three lanes")
+    check(legacy?.lanes.count == 2, "a file with one lane gets the two a mix has at least")
     check(legacy?.lanes.allSatisfy { $0.color == nil } == true, "an old mix has the lanes' own colours")
     let odd = ##"{"lanes":[{"color":"zz"},{"color":"#fa9933"}]}"##
     let oddColors = (try? MixDocument.load(from: Data(odd.utf8)))?.lanes.map(\.color)
-    check(oddColors == [nil, "FA9933", nil], "a colour that is not one falls back, a sloppy one is tidied: \(String(describing: oddColors))")
-    check(!(String(data: try! MixDocument().fileData(), encoding: .utf8)!).contains("color"),
+    check(oddColors == [nil, "FA9933"], "a colour that is not one falls back, a sloppy one is tidied: \(String(describing: oddColors))")
+    check(!(String(data: try! MixDocument(laneCount: 3).fileData(), encoding: .utf8)!).contains("color"),
           "a mix with no chosen colour does not write the key")
     let future = #"{"format":"ultramix-mix","version":99}"#
     check((try? MixDocument.load(from: Data(future.utf8))) == nil, "a newer format is refused")
+}
+
+section("lanes: two to start, up to six, an empty one removed") {
+    let grids: GridLookup = { _ in testGrid }
+    var doc = MixDocument()
+    check(doc.lanes.count == 2, "a new mix has two lanes")
+    try! doc.addLane()
+    try! doc.addLane()
+    check(doc.lanes.count == 4, "+ Lane adds them: \(doc.lanes.count)")
+    try! doc.addLane()
+    try! doc.addLane()
+    check(doc.lanes.count == 6, "up to six")
+    check((try? doc.addLane()) == nil && doc.lanes.count == 6, "a seventh is refused")
+
+    try! doc.addClip(trackID: trackA, grid: testGrid, lane: 5, startBeat: 0, grids: grids)
+    try! doc.addClip(trackID: trackA, grid: testGrid, lane: 3, startBeat: 0, grids: grids)
+    check(doc.clips.map(\.lane) == [5, 3], "clips on lanes 6 and 4")
+    check(!doc.canRemoveLane(5) && (try? doc.removeLane(5)) == nil, "a lane with a clip stays")
+    doc.lanes[4].muted = true
+    try! doc.removeLane(2)
+    check(doc.lanes.count == 5 && doc.clips.map(\.lane) == [4, 2], "the lanes under it move up, clips and all: \(doc.clips.map(\.lane))")
+    check(doc.lanes[3].muted, "and so do their switches")
+    try! doc.removeLane(0)
+    try! doc.removeLane(0)
+    check(doc.lanes.count == 3 && doc.clips.map(\.lane) == [2, 0], "\(doc.clips.map(\.lane))")
+    try! doc.removeLane(1)
+    check(doc.lanes.count == 2, "down to two")
+    var two = MixDocument()
+    check(!two.canRemoveLane(0) && (try? two.removeLane(0)) == nil && two.lanes.count == 2, "never fewer than two")
+
+    // Files: up to three lanes a mix stays readable by a version that knew
+    // only three; four or more need the new version, which an old one refuses.
+    two = MixDocument()
+    let twoData = try! two.fileData()
+    check(String(data: twoData, encoding: .utf8)!.contains("\"version\" : 4"), "two lanes are written as version 4")
+    check((try! MixDocument.load(from: twoData)).lanes.count == 2, "and read back as two")
+    var four = MixDocument(laneCount: 4)
+    try! four.addClip(trackID: trackA, grid: testGrid, lane: 3, startBeat: 0, grids: grids)
+    let fourData = try! four.fileData()
+    check(String(data: fourData, encoding: .utf8)!.contains("\"version\" : 5"), "four lanes are written as version 5")
+    let fourBack = try! MixDocument.load(from: fourData)
+    check(fourBack.lanes.count == 4 && fourBack.clips.map(\.lane) == [3], "and read back with the clip on lane 4")
+    let v4 = #"{"format":"ultramix-mix","version":4,"lanes":[{},{},{}],"clips":[]}"#
+    check((try? MixDocument.load(from: Data(v4.utf8)))?.lanes.count == 3, "a mix from before keeps its three lanes")
+    let seven = #"{"format":"ultramix-mix","version":5,"lanes":[{},{},{},{},{},{},{}],"clips":[]}"#
+    check((try? MixDocument.load(from: Data(seven.utf8)))?.lanes.count == 6, "more than six is cut to six")
+    let one = #"{"format":"ultramix-mix","version":5,"lanes":[{}],"clips":[]}"#
+    check((try? MixDocument.load(from: Data(one.utf8)))?.lanes.count == 2, "fewer than two is filled to two")
+
+    // Beatmixes on two lanes go back and forth.
+    var mix = MixDocument()
+    for _ in 0..<4 { try! mix.addClip(trackID: trackA, grid: testGrid, beatmix: .beats32, grids: grids) }
+    check(mix.clips.map(\.lane) == [0, 1, 0, 1], "two lanes: 1, 2, 1, 2: \(mix.clips.map(\.lane))")
+
 }
 
 section("lane colour: hex, defaults, contrast") {
@@ -903,7 +957,7 @@ section("lane colour: hex, defaults, contrast") {
     check(HexColor.normalized("12345") == nil && HexColor.normalized("GGGGGG") == nil && HexColor.normalized("+12345") == nil,
           "five digits, a letter past F, a sign: not colours")
 
-    var doc = MixDocument()
+    var doc = MixDocument(laneCount: 3)
     doc.setLaneColor(1, "FF0000")
     check(doc.lanes[1].color == "FF0000", "a chosen colour is stored")
     doc.setLaneColor(1, "#dd7100")
@@ -980,7 +1034,7 @@ section("automation selection: pick by rectangle, delete exactly that") {
     check(picked.gestures == [gate.id], "the volume gesture overlapping the range, not the pan one")
     check(drawn.selection(kind: .volume, beats: 3...10, values: -5...12).nodes.isEmpty, "a rectangle above the nodes picks none")
 
-    var doc = MixDocument()
+    var doc = MixDocument(laneCount: 3)
     let a = try! doc.addClip(trackID: trackA, grid: testGrid, lane: 0, startBeat: 0, grids: grids)
     let b = try! doc.addClip(trackID: trackB, grid: gridB, lane: 1, startBeat: 0, grids: grids)
     doc.clips[0].automation = drawn
@@ -997,7 +1051,7 @@ section("automation selection: pick by rectangle, delete exactly that") {
     check(doc.clips[1].automation.volume.isEmpty, "across clips")
 
     // A crossfade, selected over its range plus the guard margin, goes completely.
-    var mix = MixDocument()
+    var mix = MixDocument(laneCount: 3)
     try! mix.addClip(trackID: trackA, grid: testGrid, lane: 0, startBeat: 0, grids: grids)
     try! mix.addClip(trackID: trackB, grid: gridB, lane: 1, startBeat: 200, grids: grids)
     try! mix.autoCrossfade(nil, grids: grids)
@@ -1083,7 +1137,7 @@ section("workspace: structure, relative paths, unique names") {
 
     // A mix saved in one working directory opens under another root: its
     // track references are relative.
-    var mix = MixDocument()
+    var mix = MixDocument(laneCount: 3)
     mix.tracks = [TrackReference(id: trackA, path: stored)]
     let reopened = try! MixDocument.load(from: try! mix.fileData())
     check(elsewhere.url(forStoredPath: reopened.tracks[0].path).path.hasPrefix("/Volumes/Other Drive/Mixing/Audio/"),
@@ -1111,7 +1165,7 @@ section("safe write: beside the destination, old version kept until the swap") {
 }
 
 section("automation: a reset puts one node back at rest") {
-    var doc = MixDocument()
+    var doc = MixDocument(laneCount: 3)
     let a = try! doc.addClip(trackID: trackA, grid: testGrid, lane: 1, startBeat: 0, grids: grids)
     let node = AutomationNode(beat: 8, value: -18, tension: 0.3)
     let other = AutomationNode(beat: 12, value: 3)
@@ -1525,7 +1579,7 @@ section("grid fit: an intro beside the grid") {
 
 section("beatgrid: the spot of the song under the timeline's playhead") {
     // testGrid: 120 BPM, bar one at 1.0 s, 2 beats of pre-roll, 120 s long.
-    var doc = MixDocument()
+    var doc = MixDocument(laneCount: 3)
     let a = try! doc.addClip(trackID: trackA, grid: testGrid, lane: 0, startBeat: 0, grids: grids)   // anchor 4
     check(doc.sourceSeconds(ofTrack: trackA, atBeat: 4, grids: grids) == 1.0, "the clip's bar one is bar one of the song")
     check(doc.sourceSeconds(ofTrack: trackA, atBeat: 2, grids: grids) == 0, "its first sample is the start of the song")
@@ -1536,7 +1590,7 @@ section("beatgrid: the spot of the song under the timeline's playhead") {
     // A loop of four beats from 3 s: the playhead in its third round answers
     // a spot in the song, not in the round.
     let draft = ClipDraft.loop(region: LoopRegion(from: 3, to: 5), grid: testGrid, repeats: 8)!
-    var looped = MixDocument()
+    var looped = MixDocument(laneCount: 3)
     try! looped.addClip(trackID: trackA, grid: testGrid, lane: 1, startBeat: 100, grids: grids, draft: draft)
     let shape = ClipGeometry(clip: looped.clips[0], grid: testGrid)
     check(shape.bodyStart == 100, "the loop starts on the bar line 100")
@@ -1771,7 +1825,7 @@ section("loudness: a clip measures what it plays, with its gain; Match") {
     let long = SourceGrid(bpm: 120, firstBeatSeconds: 0, durationSeconds: 120)  // 240 beats
     let lookup: GridLookup = { [loud, quiet, faint].contains($0) ? long : nil }
     let profiles = [loud: steady(-8), quiet: steady(-15), faint: steady(-28)]
-    var doc = MixDocument()
+    var doc = MixDocument(laneCount: 3)
     doc.clips = [Clip(trackID: loud, lane: 0, anchorBeat: 0), Clip(trackID: quiet, lane: 1, anchorBeat: 200)]
     let a = doc.clips[0].id, b = doc.clips[1].id
     check(doc.matchReference(for: b, grids: lookup)?.id == a, "B mixes out of A, on the other lane")
@@ -1805,7 +1859,7 @@ func singleClipPlan(_ audio: AudioFrames, bpm: Double, firstBeat: Double, playBP
     let track = UUID()
     let grid = SourceGrid(bpm: bpm, firstBeatSeconds: firstBeat, durationSeconds: audio.duration)
     let lookup: GridLookup = { $0 == track ? grid : nil }
-    var doc = MixDocument()
+    var doc = MixDocument(laneCount: 3)
     let id = try! doc.addClip(trackID: track, grid: grid, lane: 0, startBeat: 0, grids: lookup)
     if let playBPM {
         doc.projectBPM = playBPM
@@ -1837,6 +1891,22 @@ func renderStretch(_ plan: RenderPlan, segment index: Int = 0, from: Int, count:
 }
 
 let engineTrack = synthesizeTrack(bpm: 124.5, downbeat: 0.731, bars: 40, seed: 5)
+
+section("lanes: the renderer has a bus for the sixth lane") {
+    let track = UUID()
+    let grid = SourceGrid(bpm: 124.5, firstBeatSeconds: 0.731, durationSeconds: engineTrack.duration)
+    let lookup: GridLookup = { $0 == track ? grid : nil }
+    var doc = MixDocument(laneCount: 6)
+    try! doc.addClip(trackID: track, grid: grid, lane: 5, startBeat: 0, grids: lookup)
+    let plan = RenderPlan(document: doc, grids: lookup, audio: { _ in engineTrack }, generation: 0)
+    let from = Int(AudioFrames.sampleRate) * 4
+    let heard = renderMix(plan, from: from, count: 8192, knobs: nil, laneMask: 1 << 5)
+    check(heard.contains { abs($0) > 1e-3 }, "a clip on lane 6 is heard")
+    let left = renderMix(plan, from: from, count: 8192, knobs: nil, laneMask: 0b11111)
+    check(!left.contains { abs($0) > 1e-6 }, "and not with lane 6 out of the mask")
+    let knobbed = renderMix(plan, from: from, count: 8192, knobs: LaneKnobValues(), laneMask: 1 << 5)
+    check(knobbed == heard, "neutral knobs on lane 6 change nothing")
+}
 
 section("stretcher: ratio 1 is the source, bit for bit") {
     let (plan, _, _) = singleClipPlan(engineTrack, bpm: 124.5, firstBeat: 0.731)
@@ -2039,7 +2109,7 @@ section("renderer: limiter ceiling and lane mask") {
 }
 
 section("clip gain: range, input, split, duplicate, file") {
-    var doc = MixDocument()
+    var doc = MixDocument(laneCount: 3)
     let a = try! doc.addClip(trackID: trackA, grid: testGrid, lane: 0, startBeat: 0, grids: grids)
     doc.setGain(a, -40)
     check(doc.clips[0].gainDB == -24, "held to −24: \(doc.clips[0].gainDB)")
@@ -2074,7 +2144,7 @@ section("clip gain: range, input, split, duplicate, file") {
 
     let restored = try! MixDocument.load(from: try! doc.fileData())
     check(restored == doc, "the gain survives a save")
-    var plain = MixDocument()
+    var plain = MixDocument(laneCount: 3)
     try! plain.addClip(trackID: trackA, grid: testGrid, lane: 0, startBeat: 0, grids: grids)
     check(!String(data: try! plain.fileData(), encoding: .utf8)!.contains("gainDB"), "a clip at 0 dB writes no gain")
     let old = """
@@ -2090,7 +2160,7 @@ section("clip gain: range, input, split, duplicate, file") {
 }
 
 section("clip stems: gain, mute, automation, split, duplicate, file, undo") {
-    var doc = MixDocument()
+    var doc = MixDocument(laneCount: 3)
     let a = try! doc.addClip(trackID: trackA, grid: testGrid, lane: 0, startBeat: 0, grids: grids)
     check(doc.clips[0].parts.isNeutral && doc.clips[0].parts == ClipParts(), "a new clip plays its own audio")
     doc.setPartGain(a, .drums, -40)
@@ -2169,7 +2239,7 @@ section("clip stems: gain, mute, automation, split, duplicate, file, undo") {
     check(restored == doc, "the stems survive a save")
     let json = String(data: try! doc.fileData(), encoding: .utf8)!
     check(json.contains("\"parts\"") && json.contains("\"vocals\"") && !json.contains("\"stems\""), "written as parts: \(json.count)")
-    var plain = MixDocument()
+    var plain = MixDocument(laneCount: 3)
     try! plain.addClip(trackID: trackA, grid: testGrid, lane: 0, startBeat: 0, grids: grids)
     check(!String(data: try! plain.fileData(), encoding: .utf8)!.contains("parts"), "a clip with neutral stems writes none")
 
@@ -2359,7 +2429,7 @@ section("bounce: WAV matches what plays") {
     }
     // Rounding (½ LSB) plus dither (up to 1 LSB).
     check(worst <= 1.5 / 32767, "worst difference \(worst * 32767) LSB")
-    let missing = (try? Bounce.run(plan: RenderPlan(document: MixDocument(), grids: lookup, audio: { _ in nil }, generation: 2),
+    let missing = (try? Bounce.run(plan: RenderPlan(document: MixDocument(laneCount: 3), grids: lookup, audio: { _ in nil }, generation: 2),
                                    laneMask: 0b111, settings: settings, to: directory.appendingPathComponent("empty.wav"))) == nil
     check(missing, "an empty mix refuses to bounce")
     check(!FileManager.default.fileExists(atPath: directory.appendingPathComponent("empty.wav").path), "and leaves no file")
@@ -2460,7 +2530,7 @@ func clipCurve(_ doc: MixDocument, lane: Int, _ kind: AutomationKind) -> (Double
 }
 
 section("auto crossfade: equal power over the overlap") {
-    var doc = MixDocument()
+    var doc = MixDocument(laneCount: 3)
     try! doc.addClip(trackID: trackA, grid: testGrid, lane: 0, startBeat: 0, grids: grids)   // body 2 … 242
     try! doc.addClip(trackID: trackB, grid: gridB, lane: 1, startBeat: 200, grids: grids)    // from 199.47
     let start = ClipGeometry(clip: doc.clips[1], grid: gridB).start
@@ -2482,7 +2552,7 @@ section("auto crossfade: equal power over the overlap") {
     check(LanePlan(document: doc, lane: 0, grids: grids).volume.value(at: 250) == -4, "lane A rests once the outgoing clip ends")
     check(LanePlan(document: doc, lane: 1, grids: grids).volume.value(at: 100) == -4, "lane B rests before the incoming clip")
 
-    var apart = MixDocument()
+    var apart = MixDocument(laneCount: 3)
     try! apart.addClip(trackID: trackA, grid: testGrid, lane: 0, startBeat: 0, grids: grids)
     try! apart.addClip(trackID: trackB, grid: gridB, lane: 1, startBeat: 400, grids: grids)
     check((try? apart.autoCrossfade(nil, grids: grids)) == nil, "no overlap, nothing to fade")
@@ -2492,7 +2562,7 @@ section("auto crossfade: equal power over the overlap") {
 
 section("transitions: each style's recipe, and the curve outside stays") {
     func mix() -> MixDocument {
-        var doc = MixDocument()
+        var doc = MixDocument(laneCount: 3)
         try! doc.addClip(trackID: trackA, grid: testGrid, lane: 0, startBeat: 0, grids: grids)
         try! doc.addClip(trackID: trackB, grid: gridB, lane: 1, startBeat: 200, grids: grids)
         return doc
@@ -2555,7 +2625,7 @@ section("transitions: each style's recipe, and the curve outside stays") {
 
 section("transition marks: ⇧⌘X and a beatmix leave a bar, a drag draws one") {
     func mix() -> MixDocument {
-        var doc = MixDocument()
+        var doc = MixDocument(laneCount: 3)
         try! doc.addClip(trackID: trackA, grid: testGrid, lane: 0, startBeat: 0, grids: grids)
         try! doc.addClip(trackID: trackB, grid: gridB, lane: 1, startBeat: 200, grids: grids)
         return doc
@@ -2572,7 +2642,7 @@ section("transition marks: ⇧⌘X and a beatmix leave a bar, a drag draws one")
     marks = doc.placedMarks(grids)
     check(marks.count == 1 && marks[0].style == .tape, "another style replaces the bar, not a second one")
 
-    var beatmix = MixDocument()
+    var beatmix = MixDocument(laneCount: 3)
     try! beatmix.addClip(trackID: trackA, grid: testGrid, beatmix: .beats16, grids: grids)
     try! beatmix.addClip(trackID: trackB, grid: gridB, beatmix: .beats16, grids: grids)
     marks = beatmix.placedMarks(grids)
@@ -2594,8 +2664,93 @@ section("transition marks: ⇧⌘X and a beatmix leave a bar, a drag draws one")
     check((try? refused.addMark(from: 210, to: 210.5, style: .soft, grids: grids)) == nil, "nor shorter than a beat")
 }
 
+section("transition moves: every style as moves, exactly as it was written") {
+    // The formulas the styles were written with before they became moves,
+    // kept here as the reference.
+    let fall: (Double) -> Double = { cos($0 * .pi / 2) }
+    let rise: (Double) -> Double = { sin($0 * .pi / 2) }
+    func late(_ hold: Double) -> (Double) -> Double { { t in t <= hold ? 1 : cos((t - hold) / (1 - hold) * .pi / 2) } }
+    func reference(_ style: TransitionStyle, incoming: Bool) -> [AutomationKind: (Double) -> Double] {
+        switch (style, incoming) {
+        case (.crossfade, false): return [.volume: fall]
+        case (.crossfade, true): return [.volume: rise]
+        case (.soft, false): return [.volume: { 1 - $0 }]
+        case (.soft, true): return [.volume: { $0 }]
+        case (.tape, false): return [.volume: fall, .lowPass: { 1 - 0.75 * $0 }]
+        case (.air, false): return [.volume: fall, .highPass: { 0.45 * $0 }]
+        case (.underwater, false): return [.volume: late(0.5), .lowPass: { 1 - 0.85 * $0 }]
+        case (.underwater, true): return [.volume: { $0 * $0 }]
+        case (.telephone, false):
+            return [.volume: late(0.4), .highPass: { 0.6 * min($0 / 0.4, 1) }, .lowPass: { 1 - 0.6 * min($0 / 0.4, 1) }]
+        case (.stereoDrift, false): return [.volume: fall, .pan: { -0.8 * $0 }]
+        case (.stereoDrift, true): return [.volume: rise, .pan: { _ in 0 }]
+        case (.stereoHandoff, false): return [.volume: late(0.75), .pan: { -$0 }]
+        case (.stereoHandoff, true): return [.volume: rise, .pan: { 1 - $0 }]
+        case (.filterReveal, false): return [.volume: fall]
+        case (.filterReveal, true):
+            return [.volume: { sin(min($0 / 0.25, 1) * .pi / 2) }, .lowPass: { 1 - 0.85 * (1 - $0) }]
+        case (.tape, true), (.air, true), (.telephone, true): return [.volume: rise]
+        }
+    }
+    for style in TransitionStyle.allCases {
+        for incoming in [false, true] {
+            let old = reference(style, incoming: incoming)
+            let new = style.recipe(incoming: incoming)
+            check(Set(old.keys) == Set(new.keys), "\(style) \(incoming ? "in" : "out"): the same kinds move")
+            for (kind, value) in old {
+                let same = (0...16).allSatisfy { step in
+                    let t = Double(step) / 16
+                    return abs(value(t) - (new[kind]?(t) ?? .nan)) < 1e-12
+                }
+                check(same, "\(style) \(incoming ? "in" : "out") \(kind): the same curve")
+            }
+        }
+    }
+}
+
+section("transition moves: a custom bar") {
+    var doc = MixDocument(laneCount: 3)
+    try! doc.addClip(trackID: trackA, grid: testGrid, lane: 0, startBeat: 0, grids: grids)
+    try! doc.addClip(trackID: trackB, grid: gridB, lane: 1, startBeat: 200, grids: grids)
+    let ref = try! doc.addMark(from: 210, to: 230, style: .crossfade, grids: grids)
+    let custom = TransitionMoves(outgoing: TransitionSide(volume: .linear, lowPass: .deep),
+                                 incoming: TransitionSide(volume: .slow, pan: .fromRight))
+    try! doc.apply(.custom(custom), toMark: ref, grids: grids)
+    var mark = doc.placedMarks(grids).first
+    check(mark?.custom == custom && mark?.style == nil && mark?.title == "Custom", "the bar holds its moves: \(String(describing: mark))")
+    let outVolume = clipCurve(doc, lane: 0, .volume)
+    let outFilter = clipCurve(doc, lane: 0, .lowPass)
+    let inPan = clipCurve(doc, lane: 1, .pan)
+    let inVolume = clipCurve(doc, lane: 1, .volume)
+    check(near(outFilter(210), 1, 1e-9) && near(outFilter(230), 0.15, 1e-9), "out: the low-pass closes deep")
+    check(near(inPan(210), 1, 1e-9) && near(inPan(230), 0, 1e-9), "in: from the right to the centre")
+    check(inVolume(210) == Automation.silenceDB && near(inVolume(230), Automation.defaultVolumeDB, 1e-9)
+          && near(outVolume(220), Automation.defaultVolumeDB + 20 * log10(0.5), 1e-9), "the volumes follow their moves")
+    check(clipCurve(doc, lane: 1, .lowPass)(220) == 1 && clipCurve(doc, lane: 0, .pan)(220) == 0,
+          "the kinds a side does not move stay at rest")
+
+    let moved = try! doc.moveMark(ref, from: 212, to: 232, currentStyle: .tape, grids: grids)
+    mark = doc.placedMarks(grids).first
+    check(mark?.ref == moved && mark?.custom == custom, "moved, it keeps its moves - not the current style")
+    check(near(clipCurve(doc, lane: 0, .lowPass)(232), 0.15, 1e-9), "and writes them over the new range")
+
+    let back = try! MixDocument.load(from: try! doc.fileData())
+    check(back.placedMarks(grids).first?.custom == custom, "saved and opened again, still custom")
+    try! doc.apply(.preset(.soft), toMark: moved, grids: grids)
+    mark = doc.placedMarks(grids).first
+    check(mark?.style == .soft && mark?.custom == nil, "a style again in place of the moves")
+    check(clipCurve(doc, lane: 0, .lowPass)(222) == 1, "and nothing of the custom filter is left")
+
+    let odd = #"{"id":"\#(UUID().uuidString)","start":0,"end":4,"custom":{"outgoing":{"volume":"warp","pan":"toLeft"},"incoming":{"volume":"linear"}}}"#
+    let decoded = try? JSONDecoder().decode(TransitionMark.self, from: Data(odd.utf8))
+    check(decoded?.custom?.outgoing.volume == VolumeMove.none && decoded?.custom?.outgoing.pan == .toLeft
+          && decoded?.custom?.incoming.volume == .linear, "a move this build does not know reads as none")
+    let plain = #"{"id":"\#(UUID().uuidString)","start":0,"end":4,"style":"tape"}"#
+    check((try? JSONDecoder().decode(TransitionMark.self, from: Data(plain.utf8)))?.custom == nil, "a bar from before has no moves")
+}
+
 section("transition marks: moving rewrites the style, deleting clears the range") {
-    var doc = MixDocument()
+    var doc = MixDocument(laneCount: 3)
     try! doc.addClip(trackID: trackA, grid: testGrid, lane: 0, startBeat: 0, grids: grids)
     try! doc.addClip(trackID: trackB, grid: gridB, lane: 1, startBeat: 200, grids: grids)
     let ref = try! doc.addMark(from: 210, to: 230, style: .soft, grids: grids)
@@ -2646,7 +2801,7 @@ section("transition marks: moving rewrites the style, deleting clears the range"
 }
 
 section("transition marks: split, ⌥⌫ and the file") {
-    var doc = MixDocument()
+    var doc = MixDocument(laneCount: 3)
     try! doc.addClip(trackID: trackA, grid: testGrid, lane: 0, startBeat: 0, grids: grids)
     try! doc.addClip(trackID: trackB, grid: gridB, lane: 1, startBeat: 200, grids: grids)
     try! doc.autoCrossfade(nil, grids: grids)
@@ -2660,7 +2815,7 @@ section("transition marks: split, ⌥⌫ and the file") {
 }
 
 section("beatmix: three points on the grid, a cut, and a chain across the lanes") {
-    var doc = MixDocument()
+    var doc = MixDocument(laneCount: 3)
     let first = try! doc.addClip(trackID: trackA, grid: testGrid, beatmix: .beats16, grids: grids)
     check(doc.clips[0].id == first && doc.clips[0].automation.isEmpty, "the first clip is placed plainly")
     let end = ClipGeometry(clip: doc.clips[0], grid: testGrid).end   // 242
@@ -2696,7 +2851,7 @@ section("beatmix: three points on the grid, a cut, and a chain across the lanes"
     check(doc.clips[1].automation.volume.map(\.beat) == [0, 0, 16, 92, 124, 124],
           "B keeps its fade-in and gets its fade-out: \(doc.clips[1].automation.volume.map(\.beat))")
 
-    var drawn = MixDocument()
+    var drawn = MixDocument(laneCount: 3)
     try! drawn.addClip(trackID: trackA, grid: testGrid, lane: 0, startBeat: 0, grids: grids)
     drawn.clips[0].automation.setNodes(.volume, [AutomationNode(beat: 10, value: -8), AutomationNode(beat: 230, value: 3)])
     try! drawn.addClip(trackID: trackB, grid: gridB, beatmix: .beats8, grids: grids)
@@ -2705,29 +2860,29 @@ section("beatmix: three points on the grid, a cut, and a chain across the lanes"
     check(abs(drawn.clips[0].automation.volume[1].value - (-8 + 11 * 218 / 220.0)) < 1e-9,
           "the start holds the drawn level: \(drawn.clips[0].automation.volume[1].value)")
 
-    var short = MixDocument()
+    var short = MixDocument(laneCount: 3)
     try! short.addClip(trackID: trackB, grid: gridB, lane: 0, startBeat: 0, grids: grids)   // 128 beats
     check((try? short.addClip(trackID: trackA, grid: testGrid, beatmix: .beats64, grids: grids)) != nil, "64 fits in 128")
-    var tiny = MixDocument()
+    var tiny = MixDocument(laneCount: 3)
     try! tiny.addClip(trackID: trackB, grid: gridB, lane: 0, startBeat: 0, grids: grids)
     tiny.clips[0].trimEnd = 100
     let refused = (try? tiny.addClip(trackID: trackA, grid: testGrid, beatmix: .beats32, grids: grids)) == nil
     check(refused && tiny.clips.count == 1, "a clip shorter than the beatmix refuses it")
     let brief = UUID()
     let briefGrid = SourceGrid(bpm: 128, firstBeatSeconds: 0.25, durationSeconds: 2)   // 4.27 beats
-    var overlay = MixDocument()
+    var overlay = MixDocument(laneCount: 3)
     try! overlay.addClip(trackID: trackA, grid: testGrid, lane: 0, startBeat: 0, grids: grids)
     let lookup: GridLookup = { $0 == brief ? briefGrid : grids($0) }
     check((try? overlay.addClip(trackID: brief, grid: briefGrid, beatmix: .beats8, grids: lookup)) == nil
           && overlay.clips.count == 1, "a track that would end inside the last clip is refused")
 
-    var four = MixDocument()
+    var four = MixDocument(laneCount: 3)
     try! four.addClip(trackID: trackA, grid: testGrid, lane: 0, startBeat: 0, grids: grids)
     try! four.addClip(trackID: trackB, grid: gridB, beatmix: .beats4, grids: grids)
     check(four.clips[1].anchorBeat == 236 && four.clips[0].automation.volume.map(\.beat) == [232, 236, 236]
           && four.clips[1].automation.volume.map(\.beat) == [0, 0, 4], "Beatmix 4: one bar, 236 … 240")
 
-    var plain = MixDocument()
+    var plain = MixDocument(laneCount: 3)
     try! plain.addClip(trackID: trackA, grid: testGrid, lane: 0, startBeat: 0, grids: grids)   // ends at 242
     try! plain.addClip(trackID: trackB, grid: gridB, beatmix: .noTransition, grids: grids)
     let after = ClipGeometry(clip: plain.clips[1], grid: gridB)
@@ -2740,22 +2895,22 @@ section("beatmix: three points on the grid, a cut, and a chain across the lanes"
     var quietA = testGrid
     quietA.soundEndSeconds = 110
     let quiet: GridLookup = { $0 == trackA ? quietA : grids($0) }
-    var tail = MixDocument()
+    var tail = MixDocument(laneCount: 3)
     try! tail.addClip(trackID: trackA, grid: quietA, lane: 0, startBeat: 0, grids: quiet)
     try! tail.addClip(trackID: trackB, grid: gridB, beatmix: .beats16, grids: quiet)
     check(tail.clips[1].anchorBeat == 204 && tail.clips[0].automation.volume.map(\.beat) == [200, 216, 216],
           "the beatmix ends on the last bar line of the music, 220: anchor \(tail.clips[1].anchorBeat), \(tail.clips[0].automation.volume.map(\.beat))")
-    var tailPlain = MixDocument()
+    var tailPlain = MixDocument(laneCount: 3)
     try! tailPlain.addClip(trackID: trackA, grid: quietA, lane: 0, startBeat: 0, grids: quiet)
     try! tailPlain.addClip(trackID: trackB, grid: gridB, beatmix: .noTransition, grids: quiet)
     check(tailPlain.clips[1].anchorBeat == 224 && tailPlain.clips[1].lane == 1,
           "No Transition follows the music, not the file: anchor \(tailPlain.clips[1].anchorBeat), lane \(tailPlain.clips[1].lane)")
-    var trimmed = MixDocument()
+    var trimmed = MixDocument(laneCount: 3)
     try! trimmed.addClip(trackID: trackA, grid: quietA, lane: 0, startBeat: 0, grids: quiet)
     trimmed.clips[0].trimEnd = 40   // the body ends at 202, before the silence
     try! trimmed.addClip(trackID: trackB, grid: gridB, beatmix: .beats16, grids: quiet)
     check(trimmed.clips[1].anchorBeat == 184, "a clip trimmed before the silence ends where it is cut: \(trimmed.clips[1].anchorBeat)")
-    var looped = MixDocument()
+    var looped = MixDocument(laneCount: 3)
     try! looped.addClip(trackID: trackA, grid: quietA, lane: 0, startBeat: 0, grids: quiet)
     looped.clips[0].looping = true
     looped.clips[0].loopTail = 30
@@ -2770,7 +2925,7 @@ section("beatmix at the playhead: the next four-bar line, a trim, and the rest o
     // A (120 BPM, anchor 4, ends 242) with B beatmixed onto its end: B's
     // bar one on 224 on lane B, the handover ending on 240.
     func mix() -> MixDocument {
-        var doc = MixDocument()
+        var doc = MixDocument(laneCount: 3)
         try! doc.addClip(trackID: trackA, grid: testGrid, lane: 0, startBeat: 0, grids: grids)
         try! doc.addClip(trackID: trackB, grid: gridB, beatmix: .beats16, grids: grids)
         return doc
@@ -2812,7 +2967,7 @@ section("beatmix at the playhead: the next four-bar line, a trim, and the rest o
 
     // B first (anchor 4, music to 131.47), A beatmixed on at 112; A goes in
     // at 36 and runs 240 beats to 274: the follower moves +144.
-    var grow = MixDocument()
+    var grow = MixDocument(laneCount: 3)
     try! grow.addClip(trackID: trackB, grid: gridB, lane: 0, startBeat: 0, grids: grids)
     try! grow.addClip(trackID: trackA, grid: testGrid, beatmix: .beats16, grids: grids)
     let g = try! grow.insertClip(trackID: trackA, grid: testGrid, beatmix: .beats16, atBeat: 20, grids: grids)
@@ -2820,7 +2975,7 @@ section("beatmix at the playhead: the next four-bar line, a trim, and the rest o
           "a longer record pushes the rest later: \(grow.clips[1].anchorBeat)")
     check(grow.clips.first { $0.id == g }!.automation.volume.map(\.beat) == [0, 0, 16, 220, 236, 236],
           "and fades out into it, 256 … 272: \(grow.clips.first { $0.id == g }!.automation.volume.map(\.beat))")
-    var alone = MixDocument()
+    var alone = MixDocument(laneCount: 3)
     try! alone.addClip(trackID: trackA, grid: testGrid, lane: 0, startBeat: 0, grids: grids)
     let l = try! alone.insertClip(trackID: trackB, grid: gridB, beatmix: .beats16, atBeat: 50, grids: grids)
     check(alone.clips.first { $0.id == l }!.automation.volume.count == 3, "with nothing after it, no fade-out")
@@ -2839,7 +2994,7 @@ section("beatmix at the playhead: the next four-bar line, a trim, and the rest o
     check((try? lockedNext.insertClip(trackID: trackB, grid: gridB, beatmix: .beats16, atBeat: 50, grids: grids)) == nil
           && lockedNext == lockedBefore, "a locked clip in the rest of the mix stops it, and nothing changes")
 
-    var lockedOut = MixDocument()
+    var lockedOut = MixDocument(laneCount: 3)
     try! lockedOut.addClip(trackID: trackA, grid: testGrid, lane: 0, startBeat: 0, grids: grids)
     lockedOut.clips[0].locked = true
     try! lockedOut.insertClip(trackID: trackB, grid: gridB, beatmix: .beats16, atBeat: 50, grids: grids)
@@ -2893,7 +3048,7 @@ section("cue points: eight numbers, kept in seconds of the song") {
           "a number out of range and a second cue on one number are dropped on load")
 }
 section("beatmix at a cue: the cue's bar line, the rest as at the playhead") {
-    var doc = MixDocument()
+    var doc = MixDocument(laneCount: 3)
     try! doc.addClip(trackID: trackA, grid: testGrid, lane: 0, startBeat: 0, grids: grids)
     check(doc.clips[0].anchorBeat == 4, "A's bar one on the first bar line its intro allows")
     let marks: CueLookup = { $0 == trackA ? [CuePoint(number: 1, seconds: 9), CuePoint(number: 2, seconds: 60)] : [] }
@@ -2905,12 +3060,12 @@ section("beatmix at a cue: the cue's bar line, the rest as at the playhead") {
     check(doc.clips[0].automation.volume.map(\.beat) == [16, 32, 32], "A's three points, clip-local")
     check(b.automation.volume.map(\.beat) == [0, 0, 16], "B's three points from its bar one")
 
-    var later = MixDocument()
+    var later = MixDocument(laneCount: 3)
     try! later.addClip(trackID: trackA, grid: testGrid, lane: 0, startBeat: 0, grids: grids)
     try! later.insertClip(trackID: trackB, grid: gridB, beatmix: .beats16, atCueAfter: 100, cues: marks, grids: grids)
     check(later.clips[1].anchorBeat == 124, "the playhead at 100 takes the second cue: \(later.clips[1].anchorBeat)")
 
-    var none = MixDocument()
+    var none = MixDocument(laneCount: 3)
     try! none.addClip(trackID: trackA, grid: testGrid, lane: 0, startBeat: 0, grids: grids)
     let empty: CueLookup = { _ in [] }
     check((try? none.insertClip(trackID: trackB, grid: gridB, beatmix: .beats16, atCueAfter: 0,
@@ -2921,7 +3076,7 @@ section("beatmix at a cue: the cue's bar line, the rest as at the playhead") {
                                 cues: marks, grids: grids)) == nil, "no hard cut at a cue")
     check(none.clips.count == 1, "a refusal leaves the mix as it was")
 
-    var first = MixDocument()
+    var first = MixDocument(laneCount: 3)
     try! first.insertClip(trackID: trackA, grid: testGrid, beatmix: .beats16, atCueAfter: 0,
                           cues: empty, grids: grids)
     check(first.clips.count == 1 && first.clips[0].automation.isEmpty,
@@ -2946,7 +3101,7 @@ section("loop from a marked region: whole beats, repeats, and where it lands") {
           "a region reaching past the file is refused")
     check(ClipDraft.loop(region: region, grid: testGrid, repeats: 1)!.loopTail == 0, "once is the region itself")
 
-    var doc = MixDocument()
+    var doc = MixDocument(laneCount: 3)
     try! doc.addClip(trackID: trackA, grid: testGrid, lane: 0, startBeat: 0, grids: grids)   // ends at 242
     try! doc.addClip(trackID: trackA, grid: testGrid, beatmix: .beats16, grids: grids, draft: draft)
     let loop = doc.clips[1]
@@ -2959,14 +3114,14 @@ section("loop from a marked region: whole beats, repeats, and where it lands") {
     check(doc.clips[0].automation.volume.map(\.beat) == [220, 236, 236], "the record fades out as it always does")
     check(doc.transitions(grids).count == 1, "an ordinary transition, so ⇧⌘X can replace it")
 
-    var short = MixDocument()
+    var short = MixDocument(laneCount: 3)
     try! short.addClip(trackID: trackA, grid: testGrid, lane: 0, startBeat: 0, grids: grids)
     let twice = ClipDraft.loop(region: region, grid: testGrid, repeats: 2)!
     check((try? short.addClip(trackID: trackA, grid: testGrid, beatmix: .beats16, grids: grids,
                               draft: twice)) == nil,
           "a loop that is over before the record it mixes out of is refused")
 
-    var here = MixDocument()
+    var here = MixDocument(laneCount: 3)
     try! here.addClip(trackID: trackA, grid: testGrid, lane: 0, startBeat: 0, grids: grids)
     try! here.insertClip(trackID: trackA, grid: testGrid, beatmix: .beats16, atBeat: 50, grids: grids, draft: draft)
     let inserted = here.clips[1]
@@ -2983,18 +3138,18 @@ section("loop from a marked region: whole beats, repeats, and where it lands") {
     // Found in the app: the first clip of a mix goes in through another
     // door, and that door used to place the whole record whatever was asked
     // for - a loop into an empty mix played the song.
-    var empty = MixDocument()
+    var empty = MixDocument(laneCount: 3)
     try! empty.addClip(trackID: trackA, grid: testGrid, beatmix: .beats16, grids: grids, draft: draft)
     let first = empty.clips[0]
     let firstShape = ClipGeometry(clip: first, grid: testGrid)
     check(first.looping && first.loopTail == 28 && firstShape.bodyStart == 0 && first.anchorBeat == -4
           && first.tempoAnchorBeat == 0,
           "a loop is still a loop as the first clip, its sound and its tempo point on beat 0: \(firstShape)")
-    var atPlayhead = MixDocument()
+    var atPlayhead = MixDocument(laneCount: 3)
     try! atPlayhead.insertClip(trackID: trackA, grid: testGrid, beatmix: .beats16, atBeat: 0, grids: grids,
                                draft: draft)
     check(atPlayhead.clips[0].looping, "and at the playhead of an empty mix as well")
-    var plain = MixDocument()
+    var plain = MixDocument(laneCount: 3)
     try! plain.addClip(trackID: trackA, grid: testGrid, lane: 0, startBeat: 0, grids: grids)
     check(plain.clips[0].anchorBeat == 4 && !plain.clips[0].looping, "a record is placed exactly as before")
 
@@ -3005,7 +3160,7 @@ section("loop from a marked region: whole beats, repeats, and where it lands") {
     // later, off the grid it was cut on.
     let offbeat = ClipDraft.loop(region: LoopRegion(from: 3.5, to: 5.5), grid: testGrid, repeats: 8)!
     check(offbeat.leadBeats == 5 && offbeat.trimStart == 7, "lead \(offbeat.leadBeats)")
-    var dragged = MixDocument()
+    var dragged = MixDocument(laneCount: 3)
     let id = try! dragged.addClip(trackID: trackA, grid: testGrid, lane: 0, startBeat: 40, grids: grids,
                                   draft: offbeat)
     check(ClipGeometry(clip: dragged.clips[0], grid: testGrid).bodyStart == 40, "placed on the bar line 40")
@@ -3514,7 +3669,7 @@ func liveChain() -> (MixDocument, GridLookup, [UUID]) {
     let tracks = [UUID(), UUID(), UUID()]
     let grid = SourceGrid(bpm: 124.5, firstBeatSeconds: 0.731, durationSeconds: engineTrack.duration)
     let lookup: GridLookup = { tracks.contains($0) ? grid : nil }
-    var doc = MixDocument()
+    var doc = MixDocument(laneCount: 3)
     var ids: [UUID] = []
     for track in tracks { ids.append(try! doc.addClip(trackID: track, grid: grid, beatmix: .beats32, grids: lookup)) }
     doc.setTargetBPM(ids[1], 127)
@@ -3645,7 +3800,7 @@ section("live: what is let go of, and when") {
     } else { check(false, "stopped after the end did not empty the set") }
     check(LiveSet.pruned(doc, playhead: end + 2, playing: true, grids: lookup) != .unchanged,
           "playing past every clip's end lets go of the ones a bar behind")
-    check(LiveSet.pruned(MixDocument(), playhead: 50, playing: true, grids: lookup) == .unchanged, "an empty set stays")
+    check(LiveSet.pruned(MixDocument(laneCount: 3), playhead: 50, playing: true, grids: lookup) == .unchanged, "an empty set stays")
 
     // A played clip whose tempo point was dragged past the next clip's
     // start still shapes the tempo there: it is kept until that is over.
@@ -3659,10 +3814,10 @@ section("live: the first track goes in at the playhead of an empty set") {
     let track = UUID()
     let grid = SourceGrid(bpm: 126, firstBeatSeconds: 0.5, durationSeconds: 60)
     let lookup: GridLookup = { $0 == track ? grid : nil }
-    var empty = MixDocument()
+    var empty = MixDocument(laneCount: 3)
     let id = try? empty.insertClip(trackID: track, grid: grid, beatmix: .beats16, atBeat: 0, grids: lookup)
     check(id != nil && empty.clips.count == 1, "the first track is added")
-    var plain = MixDocument()
+    var plain = MixDocument(laneCount: 3)
     try! plain.addClip(trackID: track, grid: grid, grids: lookup)
     check(empty.clips.first?.anchorBeat == plain.clips.first?.anchorBeat && empty.projectBPM == 126,
           "as the first track always is: at the start, setting the tempo")
@@ -3678,7 +3833,7 @@ section("live: an empty lane goes to the bottom at once") {
     let start = [0, 1, 2]
     func order(_ from: [Int], _ a: MixDocument, _ b: MixDocument) -> [Int] { LiveSet.compacted(from, before: a, after: b) }
     check(order(start, doc, doc) == start, "three taken lanes stay where they are")
-    check(order(start, MixDocument(), MixDocument()) == start, "an empty set shows A, B, C")
+    check(order(start, MixDocument(laneCount: 3), MixDocument(laneCount: 3)) == start, "an empty set shows A, B, C")
 
     // A is let go of: it drops, B and C move up.
     guard case .rebased(let full, _) = LiveSet.pruned(doc, playhead: liveLetGo(doc, lookup), playing: true, grids: lookup) else {
@@ -3729,7 +3884,7 @@ func liveMidTrack() -> (MixDocument, GridLookup, playhead: Double, next: UUID, n
     let slow = SourceGrid(bpm: 124, firstBeatSeconds: 0.5, durationSeconds: 200)
     let fast = SourceGrid(bpm: 128, firstBeatSeconds: 0.5, durationSeconds: 200)
     let lookup: GridLookup = { $0 == first ? slow : $0 == next ? fast : nil }
-    var doc = MixDocument()
+    var doc = MixDocument(laneCount: 3)
     try! doc.addClip(trackID: first, grid: slow, grids: lookup)
     let shape = doc.geometry(doc.clips[0], lookup)!
     return (doc, lookup, (shape.start + shape.end) / 2, next, fast)
@@ -3831,7 +3986,7 @@ section("live: Auto picks the next track") {
     let (doc, lookup, playhead, _, _) = liveMidTrack()
     check(LiveSet.needsAuto(doc, playhead: playhead, grids: lookup), "one clip playing, nothing waiting: Auto adds")
     check(!LiveSet.needsAuto(doc, playhead: -10, grids: lookup), "stopped before the clip, it is still waiting")
-    check(!LiveSet.needsAuto(MixDocument(), playhead: 0, grids: lookup), "an empty set is left empty")
+    check(!LiveSet.needsAuto(MixDocument(laneCount: 3), playhead: 0, grids: lookup), "an empty set is left empty")
 }
 
 section("live: three clips at most") {
@@ -3846,7 +4001,7 @@ section("live: fifty tracks later, nothing has grown") {
     let track = UUID()
     let grid = SourceGrid(bpm: 124.5, firstBeatSeconds: 0.731, durationSeconds: engineTrack.duration)
     let lookup: GridLookup = { $0 == track ? grid : nil }
-    var doc = MixDocument()
+    var doc = MixDocument(laneCount: 3)
     var clock = 0.0
     var largestBeat = 0.0
     var lets = 0
@@ -4134,21 +4289,35 @@ section("lane knobs: neutral does nothing, the ends are where they should be") {
     check(LaneKnobMath.gains(KnobState(function: .pan, value: 200)) == hardRight, "values held to 127")
 }
 
-section("lane knobs: six knobs in one word") {
+section("lane knobs: twelve knobs in two words") {
+    check(LaneKnobMath.slotCount == 12, "two knobs for each of six lanes")
     var knobs: [KnobState] = []
+    let values = [0, 127, 64, 1, 126, 99, 5, 77, 13, 120, 42, 88]
     for slot in 0..<LaneKnobMath.slotCount {
-        knobs.append(KnobState(function: KnobFunction.allCases[slot % 4], value: [0, 127, 64, 1, 126, 99][slot]))
+        knobs.append(KnobState(function: KnobFunction.allCases[slot % 4], value: values[slot]))
     }
-    let word = LaneKnobMath.pack(knobs)
+    let words = LaneKnobMath.pack(knobs)
     for slot in 0..<LaneKnobMath.slotCount {
-        check(LaneKnobMath.unpack(word, slot: slot) == knobs[slot], "slot \(slot)")
+        check(LaneKnobMath.unpack(words, slot: slot) == knobs[slot], "slot \(slot)")
     }
-    check(LaneKnobMath.slot(lane: 2, knob: 1) == 5, "C2 is the sixth")
+    check(LaneKnobMath.slot(lane: 2, knob: 1) == 5, "lane 3's second knob is the sixth")
+    check(LaneKnobMath.slot(lane: 5, knob: 1) == 11, "lane 6's second knob is the twelfth")
+    // A lane's pair never straddles the two words.
+    for lane in 0..<Clip.maxLanes {
+        let first = LaneKnobMath.slot(lane: lane, knob: 0) / LaneKnobMath.slotsPerWord
+        let second = LaneKnobMath.slot(lane: lane, knob: 1) / LaneKnobMath.slotsPerWord
+        check(first == second, "lane \(lane + 1)'s knobs share a word")
+    }
+    let lowOnly = LaneKnobMath.pack(Array(knobs.prefix(6)) + KnobSetup.standard.slots.suffix(6).map {
+        KnobState(function: $0.function, value: 0)
+    })
+    check(lowOnly.low == words.low, "lanes 1-3 do not touch the second word")
 }
 
 section("lane knobs: learn, forget, and what is kept") {
     var setup = KnobSetup.standard
-    check(setup.slots.map(\.function) == [.lowPass, .highPass, .lowPass, .highPass, .lowPass, .highPass], "defaults")
+    check(setup.slots.map(\.function) == Array(repeating: [KnobFunction.lowPass, .highPass], count: Clip.maxLanes).flatMap { $0 },
+          "defaults: a low-pass and a high-pass on every lane")
     let cc21 = MIDIControlChange(channel: 1, controller: 21, value: 90)
     setup.learn(slot: 0, from: cc21)
     check(setup.slots(matching: cc21) == [0], "A1 learned")
@@ -4169,6 +4338,17 @@ section("lane knobs: learn, forget, and what is kept") {
     check(KnobSetup.load(defaults) == .standard, "a String in its place: the defaults, not a crash")
     setup.forget(slot: 3)
     check(!setup.slots[3].isAssigned && setup.slots[3].function == .pan, "forget keeps the function")
+
+    // A setup stored when a mix had three lanes: six knobs. What was learned
+    // stays; lanes 4-6 get the standard knobs.
+    var six = KnobSetup(slots: Array(KnobSetup.standard.slots.prefix(6)))
+    six.learn(slot: 4, from: MIDIControlChange(channel: 3, controller: 74, value: 0))
+    six.slots[5].function = .volume
+    six.save(defaults)
+    let grown = KnobSetup.load(defaults)
+    check(grown.slots.count == 12, "six stored knobs load as twelve: \(grown.slots.count)")
+    check(Array(grown.slots.prefix(6)) == six.slots, "what was learned for lanes 1-3 is kept")
+    check(Array(grown.slots.suffix(6)) == Array(KnobSetup.standard.slots.suffix(6)), "lanes 4-6 start standard")
     defaults.removePersistentDomain(forName: "ultramix.verify.knobs")
 }
 
@@ -4350,7 +4530,7 @@ section("rec: knob values as automation, and a touch pass on the clip") {
           "each knob writes its own kind")
 
     // testGrid clip on lane 0 from startBeat 0: anchor 4, visible 2 … 242.
-    var doc = MixDocument()
+    var doc = MixDocument(laneCount: 3)
     let a = try! doc.addClip(trackID: trackA, grid: testGrid, lane: 0, startBeat: 0, grids: grids)
     doc.clips[0].automation.lowPass = [AutomationNode(beat: 6, value: 0.9), AutomationNode(beat: 20, value: 0.7),
                                        AutomationNode(beat: 60, value: 0.5)]
@@ -4372,14 +4552,14 @@ section("rec: knob values as automation, and a touch pass on the clip") {
           "letting go returns to the old curve a quarter beat later")
 
     let moving = stride(from: 0.0, through: 4.0, by: 0.05).map { AutomationNode(beat: 40 + $0, value: $0 / 4) }
-    var sweep = MixDocument()
+    var sweep = MixDocument(laneCount: 3)
     let s = try! sweep.addClip(trackID: trackA, grid: testGrid, lane: 0, startBeat: 0, grids: grids)
     sweep.writeTouch(clip: s, kind: .highPass, samples: moving, returnTo: nil, grids: grids)
     let written = sweep.clips[0].automation.highPass
     check(written.count > 20 && written.first?.value == 0 && written.last?.value == 1,
           "a moving knob keeps its movement: \(written.count) points")
 
-    var outside = MixDocument()
+    var outside = MixDocument(laneCount: 3)
     let o = try! outside.addClip(trackID: trackA, grid: testGrid, lane: 0, startBeat: 0, grids: grids)
     check(!outside.writeTouch(clip: o, kind: .pan, samples: [AutomationNode(beat: 300, value: 1)], returnTo: nil,
                               grids: grids) && outside.clips[0].automation.isEmpty,
@@ -4387,7 +4567,7 @@ section("rec: knob values as automation, and a touch pass on the clip") {
     outside.writeTouch(clip: o, kind: .pan, samples: [AutomationNode(beat: 240, value: 1), AutomationNode(beat: 250, value: 1)],
                        returnTo: nil, grids: grids)
     check(outside.clips[0].automation.pan.map(\.beat) == [236], "only the part inside the region")
-    var locked = MixDocument()
+    var locked = MixDocument(laneCount: 3)
     let l = try! locked.addClip(trackID: trackA, grid: testGrid, lane: 0, startBeat: 0, grids: grids)
     locked.setLocked(l, true)
     check(!locked.writeTouch(clip: l, kind: .volume, samples: pass, returnTo: nil, grids: grids), "a locked clip is not written")
@@ -4744,7 +4924,7 @@ section("key shift: the clip, its file, the plan and the key it makes") {
     let track = UUID()
     let grid = SourceGrid(bpm: 124, firstBeatSeconds: 0, durationSeconds: 60)
     let lookup: GridLookup = { $0 == track ? grid : nil }
-    var doc = MixDocument()
+    var doc = MixDocument(laneCount: 3)
     let id = try! doc.addClip(trackID: track, grid: grid, lane: 0, startBeat: 0, grids: lookup)
     doc.stepKeyShift(id, by: 4)
     doc.stepKeyShift(id, by: 4)
@@ -5316,7 +5496,7 @@ section("stems: the stretcher plays the levels, and splices where the song does"
     var asked: [PitchShift] = []
     func plan(playBPM: Double? = nil, available: Bool = true, short: Bool = false,
               _ configure: (inout Clip) -> Void) -> RenderPlan {
-        var doc = MixDocument()
+        var doc = MixDocument(laneCount: 3)
         let id = try! doc.addClip(trackID: track, grid: grid, lane: 0, startBeat: 0, grids: lookup)
         if let playBPM {
             doc.projectBPM = playBPM
@@ -5459,7 +5639,7 @@ section("stems: a stem's own automation plays on its own bus, and the stems stil
     // At −12 dB the safety limiter never touches a render: what is compared
     // is the stem arithmetic alone.
     func plan(playBPM: Double? = nil, _ configure: (inout MixDocument, UUID) -> Void) -> RenderPlan {
-        var doc = MixDocument()
+        var doc = MixDocument(laneCount: 3)
         let id = try! doc.addClip(trackID: track, grid: grid, lane: 1, startBeat: 0, grids: lookup)
         if let playBPM {
             doc.projectBPM = playBPM

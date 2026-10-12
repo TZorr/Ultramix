@@ -40,7 +40,7 @@ struct UltramixApp: App {
             }
             .frame(minWidth: 1000, minHeight: 620)
             .environment(\.accent, AppAccent.color(accentHex))
-            .tint(AppAccent.color(accentHex))
+            .tint(AppAccent.controlTint)
             .onAppear { appearance.apply() }
             .onChange(of: appearance) { _, value in value.apply() }
         }
@@ -224,6 +224,16 @@ struct MixCommands: Commands {
                 Button("Delete Clip Automation") { session?.deleteSelectionAutomation() }
             }
             .disabled(session?.selection.isEmpty ?? true)
+            Divider()
+            // The selected clip's track, or the one selected in the library
+            // - whichever was picked last. E does the same on the timeline;
+            // ⌘B was taken by Bounce.
+            Button(session.map { $0.beatgridRequest != nil && $0.beatgridRequest?.id == $0.beatgridTarget
+                                 && !$0.beatgridHidden } ?? false ? "Hide Beatgrid" : "Edit Beatgrid…") {
+                session?.beatgridButton()
+            }
+            .keyboardShortcut("e")
+            .disabled(session?.beatgridTarget == nil)
             Divider()
             // Outside the group: with nothing selected they write every
             // transition in the mix.

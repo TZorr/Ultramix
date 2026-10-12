@@ -70,7 +70,6 @@ struct LibraryPanel: View {
     @State private var columns = TableColumnCustomization<LibraryRow>()
     @AppStorage("libraryColumns") private var storedColumns = Data()
     @AppStorage(BeatAlgorithm.storageKey) private var beatAlgorithm: BeatAlgorithm = BeatAlgorithm.fallback
-    @Environment(\.accent) private var accent
 
     private var rows: [LibraryRow] {
         let words = search.split(whereSeparator: \.isWhitespace).map(String.init)
@@ -133,13 +132,17 @@ struct LibraryPanel: View {
                 TableColumn("Track", value: \.track.displayName) { row in
                     TrackCell(track: row.track, used: used.contains(row.id))
                 }
+                // The column people read by: it takes what the others leave.
+                .width(min: 100, ideal: 150)
                 .customizationID("track")
                 // Without it a row has nothing to recognise it by.
                 .disabledCustomizationBehavior(.visibility)
                 TableColumn("BPM", value: \.track.bpmSortValue) { row in
                     Text(row.track.bpm.map { String(format: "%.2f", $0) } ?? "–")
                         .monospacedDigit()
-                        .foregroundStyle(row.track.isCorrected ? accent : Color.primary)
+                        // A corrected grid shows as the pencil in the
+                        // status column, not as a coloured number.
+                        .foregroundStyle(Color.primary)
                 }
                 .width(58)
                 .customizationID("bpm")
@@ -224,9 +227,13 @@ struct LibraryPanel: View {
             }
             .overlay {
                 if library.tracks.isEmpty {
-                    ContentUnavailableView("No Tracks",
-                                           systemImage: "music.note.list",
-                                           description: Text("Drop audio files or folders here, or use +."))
+                    ContentUnavailableView {
+                        Label("No Tracks", systemImage: "music.note.list")
+                    } description: {
+                        Text("Drop audio files or folders here.")
+                    } actions: {
+                        Button("Add Tracks or Folder…") { FilePanels.importTracks(library) }
+                    }
                 } else if rows.isEmpty {
                     ContentUnavailableView("No Matching Tracks",
                                            systemImage: "line.3.horizontal.decrease.circle",
@@ -374,13 +381,11 @@ private struct TableIdentity: Hashable {
     let bpm: BPMFilter
 }
 
-/// The row under the search: a checkbox that switches the tempo range on,
-/// its two bounds, each typed or stepped a whole BPM at a time, the half
-/// and double tempo option, and a button that puts the range around the
-/// selected track.
-///
-/// It has to fit the library at its narrowest (300 points), which is why
-/// the last two are a short label and an icon rather than words.
+/// The tempo range filter: on or off, its two bounds, and in a second row,
+/// in words, whether half and double tempos count and the range centred on
+/// the selected track. One row held it all only with a "½×2×" and an icon
+/// nobody could read; the sidebar's narrowest 300 points leave no room for
+/// the words beside the bounds.
 struct BPMRangeBar: View {
     @Binding var filter: BPMFilter
     /// The tempo of the one selected track; nil with none, several, or an
@@ -388,42 +393,42 @@ struct BPMRangeBar: View {
     let selectedBPM: Double?
 
     var body: some View {
-        // The narrowest library leaves 276 points, and at spacing 4 with
-        // 50-point fields and a bordered ⌖ the row was 294. The fields
-        // cannot shrink: a small rounded field needs 50.5 points to show
-        // "126.30" whole.
-        HStack(spacing: 2) {
-            Toggle("BPM", isOn: $filter.isOn)
-                .toggleStyle(.checkbox)
-                .help("Show only tracks in this tempo range. Unanalysed tracks are hidden while it is on.")
-            BPMBound(value: filter.lower) { value in
-                filter.setLower(value)
-                filter.isOn = true
-            }
-            Text("–").foregroundStyle(.secondary)
-            BPMBound(value: filter.upper) { value in
-                filter.setUpper(value)
-                filter.isOn = true
-            }
-            Spacer(minLength: 0)
-            // Switching the option on also switches the range on - otherwise
-            // the button lights up and the list does not change.
-            Toggle("½×2×", isOn: Binding(
-                get: { filter.includesOctaves },
-                set: { filter.includesOctaves = $0; if $0 { filter.isOn = true } }))
-                .toggleStyle(.button)
-                .help("Also list tracks at half or double a tempo in the range")
-            Button {
-                if let bpm = selectedBPM {
-                    filter.centre(on: bpm)
+        // The fields cannot shrink: a small rounded field needs 50.5 points
+        // to show "126.30" whole.
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 2) {
+                Toggle("BPM", isOn: $filter.isOn)
+                    .toggleStyle(.checkbox)
+                    .help("Show only tracks in this tempo range. Unanalysed tracks are hidden while it is on.")
+                BPMBound(value: filter.lower) { value in
+                    filter.setLower(value)
                     filter.isOn = true
                 }
-            } label: {
-                Image(systemName: "scope")
+                Text("–").foregroundStyle(.secondary)
+                BPMBound(value: filter.upper) { value in
+                    filter.setUpper(value)
+                    filter.isOn = true
+                }
+                Spacer(minLength: 0)
             }
-            .buttonStyle(.borderless)
-            .disabled(selectedBPM == nil)
-            .help("Around Selection: set the range to ±\(Int(BPMFilter.aroundSpan)) BPM about the selected track's tempo")
+            HStack(spacing: 6) {
+                // Switching the option on also switches the range on -
+                // otherwise the button lights up and the list does not change.
+                Toggle("Incl. ½× and 2×", isOn: Binding(
+                    get: { filter.includesOctaves },
+                    set: { filter.includesOctaves = $0; if $0 { filter.isOn = true } }))
+                    .toggleStyle(.button)
+                    .help("Also list tracks at half or double a tempo in the range")
+                Button("Around Selection") {
+                    if let bpm = selectedBPM {
+                        filter.centre(on: bpm)
+                        filter.isOn = true
+                    }
+                }
+                .disabled(selectedBPM == nil)
+                .help("Set the range to ±\(Int(BPMFilter.aroundSpan)) BPM about the selected track's tempo")
+                Spacer(minLength: 0)
+            }
         }
         .controlSize(.small)
     }
@@ -477,12 +482,11 @@ private struct BPMBound: View {
 struct TrackCell: View {
     let track: Track
     let used: Bool
-    @Environment(\.accent) private var accent
 
     var body: some View {
         HStack(spacing: 7) {
             Circle()
-                .fill(used ? accent : Color.clear)
+                .fill(used ? Color.secondary : Color.clear)
                 .frame(width: 6, height: 6)
                 .help(used ? "In the mix" : "")
             VStack(alignment: .leading, spacing: 1) {
@@ -532,7 +536,7 @@ struct PreviewBar: View {
     let trackID: UUID?
 
     var body: some View {
-        HStack(spacing: 10) {
+        VStack(spacing: 6) {
             if let id = trackID, let track = library.track(id) {
                 TimelineView(.periodic(from: .now, by: 0.1)) { _ in
                     let preview = session.preview
@@ -551,6 +555,7 @@ struct PreviewBar: View {
                         }
                         .buttonStyle(.borderless)
                         .disabled(track.state != .done)
+                        .help(playing ? "Stop the preview" : "Preview the track")
                         VStack(alignment: .leading, spacing: 3) {
                             Text(track.displayName).lineLimit(1).font(.callout)
                             Slider(value: Binding(
@@ -559,27 +564,30 @@ struct PreviewBar: View {
                                 .controlSize(.mini)
                                 .disabled(preview.trackID != id)
                         }
-                        // An icon, not the word: with the add-mode menu
-                        // beside it "Beatgrid" left the name 32 pt at the
-                        // library's narrowest; the icon leaves 65.
-                        Button {
-                            session.beatgridRequest = BeatgridRequest(id: id)
-                        } label: {
-                            Image(systemName: "chart.bar.xaxis")
-                        }
-                        .help("Edit Beatgrid…")
-                        .disabled(track.state != .done)
                     }
                 }
             } else {
-                Text("Select a track to audition it.")
+                Text("Select a track to preview it.")
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    .frame(height: 30)
             }
-            AddModeMenu(session: session)
+            // What the track can go on to: its beatgrid, or into the mix -
+            // the add mode is shown whether or not a track is selected, so
+            // the choice can be made before the first one is.
+            HStack(spacing: 8) {
+                Button("Edit Beatgrid…") {
+                    if let id = trackID { session.beatgridRequest = BeatgridRequest(id: id) }
+                }
+                .disabled(trackID.flatMap { library.track($0) }?.state != .done)
+                .help("Edit the selected track's beatgrid in the drawer under the timeline")
+                Spacer(minLength: 4)
+                AddModeMenu(session: session)
+            }
+            .controlSize(.small)
         }
         .padding(.horizontal, 12)
-        .frame(height: 56)
+        .padding(.vertical, 8)
     }
 }
 
@@ -632,8 +640,7 @@ struct AddModeMenu: View {
             Divider()
             ForEach(BeatmixLength.allCases.filter { $0 != .noTransition }) { item(.cue($0)) }
         } label: {
-            Label(session.libraryAddMode.shortTitle, systemImage: "return")
-                .labelStyle(.titleAndIcon)
+            Text("Return: \(session.libraryAddMode.shortTitle)")
         }
         .menuStyle(.borderlessButton)
         .fixedSize()

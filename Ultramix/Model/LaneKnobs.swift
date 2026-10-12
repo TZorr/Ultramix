@@ -84,7 +84,11 @@ nonisolated struct KnobState: Equatable, Sendable {
 
 nonisolated enum LaneKnobMath {
     static let knobsPerLane = 2
-    static let slotCount = Clip.laneCount * knobsPerLane
+    /// For every lane a mix can have, whether this one has it or not: the
+    /// knobs belong to the Mac and its controller, not to a mix.
+    static let slotCount = Clip.maxLanes * knobsPerLane
+    /// Ten bits a knob, six knobs - three lanes - to a 64-bit word.
+    static let slotsPerWord = 6
     static let valueRange = 0...127
 
     static func slot(lane: Int, knob: Int) -> Int { lane * knobsPerLane + knob }
@@ -126,22 +130,31 @@ nonisolated enum LaneKnobMath {
         }
     }
 
-    /// All six knobs in one 64-bit word, ten bits each: the value in the low
-    /// seven, the function in the next two. One word so the audio thread
-    /// reads every knob with one atomic load, and never half an update.
-    static func pack(_ knobs: [KnobState]) -> UInt64 {
-        var word: UInt64 = 0
+    /// All twelve knobs in two 64-bit words, ten bits each: the value in the
+    /// low seven, the function in the next two. A lane's two knobs are always
+    /// in the same word, so the audio thread reads each lane's pair with one
+    /// atomic load and never half an update of it.
+    static func pack(_ knobs: [KnobState]) -> KnobWords {
+        var words = KnobWords()
         for (index, knob) in knobs.prefix(slotCount).enumerated() {
             let bits = UInt64(min(max(knob.value, 0), 127)) | knob.function.code << 7
-            word |= bits << UInt64(index * 10)
+            let shifted = bits << UInt64((index % slotsPerWord) * 10)
+            if index < slotsPerWord { words.low |= shifted } else { words.high |= shifted }
         }
-        return word
+        return words
     }
 
-    static func unpack(_ word: UInt64, slot: Int) -> KnobState {
-        let bits = word >> UInt64(slot * 10)
+    static func unpack(_ words: KnobWords, slot: Int) -> KnobState {
+        let word = slot < slotsPerWord ? words.low : words.high
+        let bits = word >> UInt64((slot % slotsPerWord) * 10)
         return KnobState(function: KnobFunction(code: bits >> 7), value: Int(bits & 0x7F))
     }
+}
+
+/// The packed knobs: lanes 1-3 in `low`, lanes 4-6 in `high`.
+nonisolated struct KnobWords: Equatable, Sendable {
+    var low: UInt64 = 0
+    var high: UInt64 = 0
 }
 
 /// What one knob does and which Control Change turns it. The channel and
@@ -164,7 +177,7 @@ nonisolated struct KnobAssignment: Codable, Equatable, Sendable {
     }
 }
 
-/// The six assignments, kept per Mac: a controller belongs to the desk it
+/// The twelve assignments, two for each of six lanes, kept per Mac: a controller belongs to the desk it
 /// sits on, not to a working directory or a mix.
 nonisolated struct KnobSetup: Codable, Equatable, Sendable {
     /// UserDefaults key. Stored as JSON **Data** - a String written in its
@@ -202,10 +215,17 @@ nonisolated struct KnobSetup: Codable, Equatable, Sendable {
         slots.indices.filter { slots[$0].matches(change) }
     }
 
+    /// A setup stored for fewer knobs - six, from when a mix had three
+    /// lanes - keeps what was learned and gets the standard knobs for the
+    /// lanes it did not have; one stored for more is cut back.
     static func load(_ defaults: UserDefaults = .standard) -> KnobSetup {
         guard let data = defaults.data(forKey: storageKey),
-              let setup = try? JSONDecoder().decode(KnobSetup.self, from: data),
-              setup.slots.count == LaneKnobMath.slotCount else { return .standard }
+              var setup = try? JSONDecoder().decode(KnobSetup.self, from: data),
+              !setup.slots.isEmpty else { return .standard }
+        if setup.slots.count < LaneKnobMath.slotCount {
+            setup.slots += standard.slots[setup.slots.count...]
+        }
+        setup.slots = Array(setup.slots.prefix(LaneKnobMath.slotCount))
         return setup
     }
 

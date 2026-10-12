@@ -2,14 +2,15 @@
 //  ContentView.swift
 //  Ultramix
 //
-//  The main window: transport on top, timeline filling the middle, the
-//  selected clip's details along the bottom, and the library as an inspector
-//  on the right that can be put away.
+//  The main window: the library as a sidebar on the left, the timeline in the
+//  middle with its own bar above the ruler, the selected clip's inspector on
+//  the right, and the transport in the window's toolbar. Library and inspector
+//  can each be put away.
 //
-//  The beatgrid editor opens as a pane under the timeline rather than a sheet
-//  over it: cue points and loops are made to be put into the timeline, so the
-//  timeline has to stay in sight. Its top edge is draggable, its height kept
-//  per Mac, and E folds it to a bar and back.
+//  The beatgrid editor opens as a drawer under the timeline rather than a
+//  sheet over it: cue points and loops are made to be put into the timeline,
+//  so the timeline has to stay in sight. Its top edge is draggable, its height
+//  kept per Mac, and E folds it to a bar and back.
 //
 
 import SwiftUI
@@ -22,33 +23,100 @@ struct ContentView: View {
     /// Mix or Live; `session` is the one in front.
     @Binding var tab: AppTab
 
-    @State private var showLibrary = true
+    @AppStorage("showLibrary") private var showLibrary = true
+    @AppStorage("showInspector") private var showInspector = true
     @AppStorage("pixelsPerBeat") private var pixelsPerBeat = 6.0
     @AppStorage("beatgridHeight") private var editorHeight = 320.0
     @AppStorage("followPlayhead") private var follow = true
+    @AppStorage("tempoFolded") private var tempoFolded = false
     @State private var drawStyle: DrawStyle = .nodes
     @State private var period = 1.0
 
-    /// The library's selection in the order the tracks were added to it -
-    /// the button cannot see the table's sort.
-    private var librarySelection: [UUID] {
-        library.tracks.map(\.id).filter { library.selection.contains($0) }
+    private var columns: Binding<NavigationSplitViewVisibility> {
+        Binding(get: { showLibrary ? .all : .detailOnly },
+                set: { showLibrary = $0 != .detailOnly })
     }
 
     var body: some View {
+        NavigationSplitView(columnVisibility: columns) {
+            LibraryPanel(session: session, library: library)
+                .navigationSplitViewColumnWidth(min: 300, ideal: 320, max: 460)
+        } detail: {
+            detail
+                .navigationSplitViewColumnWidth(min: 360, ideal: 1000)
+        }
+        .inspector(isPresented: $showInspector) {
+            ClipInspector(session: session, library: library)
+                .inspectorColumnWidth(min: 270, ideal: 300, max: 380)
+        }
+        .toolbar {
+            ToolbarItem(placement: .navigation) {
+                // Two documents side by side, not a mode: switching costs
+                // neither anything, and the live set plays on behind the mix.
+                Picker("Tab", selection: $tab) {
+                    ForEach(AppTab.allCases) { Text($0.title).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .fixedSize()
+                .help("Mix edits and saves a mix (⌘1). Live plays a set of up to three clips that lets go of what has played and is never saved (⌘2); it plays on while you look at the mix.")
+            }
+            // One group in the middle: the transport, where the playhead is,
+            // and what comes out. Only the inspector's switch is at the right.
+            // Two items side by side rather than one: where the middle column
+            // is too narrow for both, the meter goes into the overflow menu
+            // and the transport stays - as one item, both went.
+            ToolbarItem(placement: .principal) {
+                TransportControls(session: session)
+            }
+            ToolbarItem(placement: .principal) {
+                HStack(spacing: 12) {
+                    Divider().frame(height: 22)
+                    OutputMeter(session: session)
+                }
+            }
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    showInspector.toggle()
+                } label: {
+                    Label("Inspector", systemImage: "sidebar.trailing")
+                }
+                .help("Show or hide the clip inspector")
+            }
+        }
+        .navigationTitle(session.title)
+        .navigationSubtitle(session.isLive ? "\(workspaceName) — \(session.liveSubtitle)"
+                            : session.isDirty ? "\(workspaceName) — Edited" : workspaceName)
+        .sheet(isPresented: $session.showBounce) {
+            BounceSheet(session: session)
+        }
+        .alert("Ultramix", isPresented: Binding(
+            get: { session.message != nil || library.lastError != nil || library.notice != nil },
+            set: { if !$0 { session.message = nil; library.lastError = nil; library.notice = nil } }
+        )) {
+            Button("OK") {}
+        } message: {
+            Text(session.message ?? library.lastError ?? library.notice ?? "")
+        }
+    }
+
+    /// The middle column: the timeline's bar, the timeline, the beatgrid
+    /// drawer, and the status line.
+    private var detail: some View {
         VStack(spacing: 0) {
-            TransportBar(session: session, pixelsPerBeat: $pixelsPerBeat, follow: $follow,
-                         tool: $session.tool, drawStyle: $drawStyle, period: $period)
+            TimelineBar(session: session, pixelsPerBeat: $pixelsPerBeat, follow: $follow,
+                        tool: $session.tool, drawStyle: $drawStyle, period: $period)
+                .yieldsWidth()
             Divider()
             TimelinePanel(session: session, library: library, pixelsPerBeat: $pixelsPerBeat,
-                          follow: follow, tool: session.tool, drawStyle: drawStyle, period: period)
+                          follow: follow, tool: session.tool, drawStyle: drawStyle, period: period,
+                          tempoFolded: $tempoFolded)
                 // A timeline of its own per tab: its scroll position and a
                 // half-drawn gesture belong to one document, not both.
                 .id(ObjectIdentifier(session))
             if let request = session.beatgridRequest {
                 let hidden = session.beatgridHidden
-                Divider()
                 if hidden {
+                    Divider()
                     CollapsedEditorBar(title: library.track(request.id)?.displayName ?? "") {
                         session.beatgridHidden = false
                     } close: {
@@ -67,22 +135,21 @@ struct ContentView: View {
                                hidden: hidden, hide: { session.toggleBeatgrid() }) {
                     session.beatgridRequest = nil
                 }
-                // Another track opened in the pane is another editor: its
+                // Another track opened in the drawer is another editor: its
                 // selected line, its zoom and its mark start afresh.
                 .id(request.id)
-                // The pane gives way when the window is short, down to a
-                // usable strip; the clip rows below never do. With a fixed
-                // height the clip rows were the ones pushed off the bottom
-                // of a 797-point window.
-                .frame(minHeight: hidden ? 0 : 170, maxHeight: hidden ? 0 : editorHeight)
+                .yieldsWidth()
+                // The drawer gives way when the window is short, down to a
+                // usable strip; the status line below never does.
+                .frame(minHeight: hidden ? 0 : 220, maxHeight: hidden ? 0 : editorHeight)
                 .clipped()
                 .opacity(hidden ? 0 : 1)
                 .allowsHitTesting(!hidden)
                 .accessibilityHidden(hidden)
             }
             Divider()
-            ClipBar(session: session, library: library)
-                .fixedSize(horizontal: false, vertical: true)
+            StatusLine(session: session, library: library)
+                .yieldsWidth()
         }
         .overlay(alignment: .bottom) {
             if let progress = library.tagProgress {
@@ -101,62 +168,6 @@ struct ContentView: View {
         }
         .animation(.easeInOut(duration: 0.2), value: library.tagProgress)
         .animation(.easeInOut(duration: 0.2), value: library.cacheFill)
-        .inspector(isPresented: $showLibrary) {
-            LibraryPanel(session: session, library: library)
-                .inspectorColumnWidth(min: 300, ideal: 390, max: 620)
-        }
-        .toolbar {
-            ToolbarItem(placement: .navigation) {
-                // Two documents side by side, not a mode: switching costs
-                // neither anything, and the live set plays on behind the mix.
-                Picker("Tab", selection: $tab) {
-                    ForEach(AppTab.allCases) { Text($0.title).tag($0) }
-                }
-                .pickerStyle(.segmented)
-                .fixedSize()
-                .help("Mix edits and saves a mix (⌘1). Live plays a set of up to three clips that lets go of what has played and is never saved (⌘2); it plays on while you look at the mix.")
-            }
-            ToolbarItem(placement: .primaryAction) {
-                // Click adds the library's selection at the end of the mix
-                // with the current beatmix; the arrow picks another length,
-                // adds with it at once, and makes it the current one. The
-                // transitions stay in the clip bar and the Clip menu - this
-                // button used to repeat them.
-                Menu {
-                    ForEach(BeatmixLength.allCases) { length in
-                        Button(length.title) { session.addTracks(librarySelection, beatmix: length) }
-                    }
-                } label: {
-                    Label(session.beatmixLength.title, systemImage: "text.line.last.and.arrowtriangle.forward")
-                } primaryAction: {
-                    session.addTracks(librarySelection, beatmix: session.beatmixLength)
-                }
-                .disabled(library.selection.isEmpty)
-                .help("Add the tracks selected in the library at the end of the mix - \(session.beatmixLength.title); the arrow picks another")
-            }
-            ToolbarItem(placement: .primaryAction) {
-                Button {
-                    showLibrary.toggle()
-                } label: {
-                    Label("Library", systemImage: "music.note.list")
-                }
-                .help("Show or hide the library")
-            }
-        }
-        .navigationTitle(session.title)
-        .navigationSubtitle(session.isLive ? "\(workspaceName) — \(session.liveSubtitle)"
-                            : session.isDirty ? "\(workspaceName) — Edited" : workspaceName)
-        .sheet(isPresented: $session.showBounce) {
-            BounceSheet(session: session)
-        }
-        .alert("Ultramix", isPresented: Binding(
-            get: { session.message != nil || library.lastError != nil || library.notice != nil },
-            set: { if !$0 { session.message = nil; library.lastError = nil; library.notice = nil } }
-        )) {
-            Button("OK") {}
-        } message: {
-            Text(session.message ?? library.lastError ?? library.notice ?? "")
-        }
     }
 }
 
@@ -180,10 +191,14 @@ private struct EditorResizeHandle: View {
     static let foldBeyond = 80.0
 
     var body: some View {
+        // A bar of its own, darker than the timeline and the drawer, with a
+        // grip in the middle: the drawer's edge has to be seen to be found.
         ZStack {
-            Color.clear.frame(height: 7)
-            Capsule().fill(.secondary.opacity(0.4)).frame(width: 40, height: 3)
+            Rectangle().fill(Color.black.opacity(0.35)).frame(height: 9)
+            Capsule().fill(.secondary.opacity(0.7)).frame(width: 44, height: 3)
         }
+        .overlay(alignment: .top) { Divider() }
+        .overlay(alignment: .bottom) { Divider() }
         .contentShape(Rectangle())
         .gesture(
             DragGesture(minimumDistance: 0, coordinateSpace: .global)
@@ -239,5 +254,24 @@ private struct CollapsedEditorBar: View {
         .accessibilityLabel("Beatgrid editor, hidden: \(title)")
         .accessibilityAddTraits(.isButton)
         .accessibilityAction { show() }
+    }
+}
+
+extension View {
+    /// Lays a row of the middle column out at its own width, but asks
+    /// nothing of the column for it: what does not fit is cut off on the
+    /// right.
+    ///
+    /// The window is split three ways - library, timeline, inspector - and
+    /// the split view gives the middle what the other two leave. A row of
+    /// fixed-size controls wider than that made the middle column's minimum
+    /// larger than the room there was; the split view and SwiftUI then
+    /// pushed the width back and forth until AppKit gave up ("more Update
+    /// Constraints in Window passes than there are views") and the app
+    /// crashed - reliably, by making the window narrower than about 1300
+    /// points.
+    func yieldsWidth() -> some View {
+        frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+            .clipped()
     }
 }

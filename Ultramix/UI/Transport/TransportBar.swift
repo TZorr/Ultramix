@@ -2,8 +2,11 @@
 //  TransportBar.swift
 //  Ultramix
 //
-//  Play, where the playhead is, the tempo playing there, the output level, the
-//  editing tool, and zoom.
+//  The group in the middle of the window's toolbar: play, where the playhead
+//  is and the tempo playing there, in one framed readout, and beside it the
+//  output level with its units - the bars at 30 frames a second, the dBFS and LUFS numbers on
+//  slower clocks of their own. The editing tool and zoom are the timeline's
+//  (TimelineBar).
 //
 //  The live parts are redrawn by a TimelineView at 30 frames a second from the
 //  engine's atomics. None of them is observable state, and none should be: a
@@ -19,25 +22,28 @@
 
 import SwiftUI
 
-struct TransportBar: View {
+/// The window toolbar's middle: back to the start, play, record, and one
+/// framed readout of where the playhead is - bar, time, tempo.
+///
+/// A toolbar item is laid out by Auto Layout from the size SwiftUI reports.
+/// Content that redraws 30 times a second must never change that size, or
+/// every frame asks the window for another constraint pass - and during a
+/// resize or an animated layout that ran past AppKit's limit and crashed
+/// ("more Update Constraints in Window passes than there are views"). So
+/// the item has one fixed size, whatever it shows.
+struct TransportControls: View {
     let session: MixSession
-    @Binding var pixelsPerBeat: Double
-    @Binding var follow: Bool
-    @Binding var tool: TimelineTool
-    @Binding var drawStyle: DrawStyle
-    @Binding var period: Double
 
-    static let zoomRange: ClosedRange<Double> = 0.25...256
+    static let size = CGSize(width: 330, height: 34)
 
     var body: some View {
-        HStack(spacing: 14) {
-            TimelineView(.animation(minimumInterval: 1.0 / 30)) { _ in
-                let levels = session.engine.readMeters()
-                HStack(spacing: 10) {
+        TimelineView(.animation(minimumInterval: 1.0 / 30)) { _ in
+            HStack(spacing: 10) {
+                HStack(spacing: 2) {
                     Button {
                         session.seek(toBeat: 0)
                     } label: {
-                        Image(systemName: "backward.end.fill")
+                        Image(systemName: "backward.end.fill").frame(width: 22)
                     }
                     .help("Go to Start (Home)")
                     Button {
@@ -45,7 +51,7 @@ struct TransportBar: View {
                     } label: {
                         Image(systemName: session.isPlaying ? "pause.fill" : "play.fill")
                             .font(.title3)
-                            .frame(width: 22)
+                            .frame(width: 26)
                     }
                     .help("Play / Pause (Space)")
                     if !session.isLive {
@@ -53,149 +59,141 @@ struct TransportBar: View {
                             Image(systemName: session.isRecording ? "record.circle.fill" : "record.circle")
                                 .font(.title3)
                                 .foregroundStyle(session.isRecording ? Color.red : Color.secondary)
+                                .frame(width: 22)
                         }
                         .toggleStyle(.button)
-                        .buttonStyle(.borderless)
                         .accessibilityLabel("Record knobs")
                         .help(session.isRecording
                               ? "Recording: a lane knob turned while the mix plays writes into the clip under the playhead. Click or ⌘R to stop recording."
                               : "Record the lane knobs as automation, inside the clips, while the mix plays (⌘R)")
                     }
-                    PositionReadout(beat: session.playheadBeat(), tempo: session.tempo)
-                    Divider().frame(height: 26)
-                    MeterView(left: levels.left, right: levels.right,
-                              clipped: session.overloadLamp(levels.overload))
                 }
+                .buttonStyle(.borderless)
+                PositionReadout(beat: session.playheadBeat(), tempo: session.tempo,
+                                master: session.document.masterLocked)
             }
-            .buttonStyle(.borderless)
-            // Its own, slower clock: a number that changes 30 times a second
-            // cannot be read, and four times is enough to follow.
-            TimelineView(.periodic(from: .now, by: 0.25)) { _ in
-                ShortTermReadout(lufs: session.engine.readShortTermLUFS())
-            }
-
-            Spacer(minLength: 12)
-
-            Picker("Tool", selection: $tool) {
-                ForEach(TimelineTool.allCases) { Text($0.title).tag($0) }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .frame(width: 330)
-            .help("Edit clips, or draw volume, pan, low-pass or high-pass automation (Tab)")
-
-            if tool != .clips {
-                Picker("Draw", selection: $drawStyle) {
-                    ForEach(DrawStyle.allCases) { Text($0.title).tag($0) }
-                }
-                .labelsHidden()
-                .frame(width: 100)
-                .help("Nodes: click to place a point, drag across empty space to select points. Step, sine, triangle: drag to draw a repeating movement, ⇧-drag to select. Delete removes the selection; ⌥-click removes a single point; double-click resets a point to its resting value.")
-                if drawStyle != .nodes {
-                    Picker("Period", selection: $period) {
-                        ForEach([0.25, 0.5, 1.0, 2.0, 4.0, 8.0], id: \.self) { value in
-                            Text(periodTitle(value)).tag(value)
-                        }
-                    }
-                    .labelsHidden()
-                    .frame(width: 90)
-                    .help("Length of one cycle of the movement")
-                }
-            }
-
-            Spacer(minLength: 12)
-
-            Toggle(isOn: $follow) {
-                Image(systemName: "arrow.right.to.line")
-            }
-            .toggleStyle(.button)
-            .help("Follow the playhead")
-
-            HStack(spacing: 4) {
-                Button { zoom(by: 1 / 1.5) } label: { Image(systemName: "minus.magnifyingglass") }
-                    .buttonStyle(.borderless)
-                Slider(value: Binding(get: { log2(pixelsPerBeat) },
-                                      set: { pixelsPerBeat = pow(2, $0) }),
-                       in: log2(Self.zoomRange.lowerBound)...log2(Self.zoomRange.upperBound))
-                    .frame(width: 110)
-                Button { zoom(by: 1.5) } label: { Image(systemName: "plus.magnifyingglass") }
-                    .buttonStyle(.borderless)
-            }
-            .help("Zoom (+ / − on the timeline, or pinch)")
+            .frame(width: Self.size.width, height: Self.size.height)
         }
-        .padding(.horizontal, 14)
-        .frame(height: 50)
-        .background(.bar)
-    }
-
-    private func zoom(by factor: Double) {
-        pixelsPerBeat = min(max(pixelsPerBeat * factor, Self.zoomRange.lowerBound), Self.zoomRange.upperBound)
-    }
-
-    private func periodTitle(_ beats: Double) -> String {
-        switch beats {
-        case 0.25: "1/16"
-        case 0.5: "1/8"
-        case 1: "1 beat"
-        case 2: "2 beats"
-        case 4: "1 bar"
-        default: "\(Int(beats / 4)) bars"
-        }
+        .frame(width: Self.size.width, height: Self.size.height)
     }
 }
 
-/// Bar and beat, clock time, and the tempo playing at the playhead.
+/// The output's level beside the transport: peak meters and the overload
+/// lamp, the peak in dBFS, and short-term loudness. Each on its own clock -
+/// see the note at the top of the file.
+///
+/// The bars move at 30 frames a second; the numbers do not. A number that
+/// changes 30 times a second cannot be read, so the peak is shown twice a
+/// second - as the highest peak since it was last shown, so a short
+/// transient between two readings is not lost.
+struct OutputMeter: View {
+    let session: MixSession
+
+    /// Fixed, like the transport's: see there.
+    static let size = CGSize(width: 214, height: 30)
+
+    @State private var hold = PeakHold()
+
+    var body: some View {
+        HStack(spacing: 8) {
+            TimelineView(.animation(minimumInterval: 1.0 / 30)) { _ in
+                // The only reader of the meters: reading clears the
+                // overload flag, and a second reader would steal the lamp.
+                let levels = session.engine.readMeters()
+                let _ = hold.feed(max(levels.left, levels.right))
+                MeterView(left: levels.left, right: levels.right,
+                          clipped: session.overloadLamp(levels.overload))
+            }
+            TimelineView(.periodic(from: .now, by: 0.5)) { _ in
+                PeakReadout(peak: hold.take())
+            }
+            TimelineView(.periodic(from: .now, by: 0.25)) { _ in
+                ShortTermReadout(lufs: session.engine.readShortTermLUFS())
+            }
+        }
+        .frame(width: Self.size.width, height: Self.size.height)
+    }
+}
+
+/// The highest peak since it was last taken. A plain object, not observed:
+/// feeding it 30 times a second must not redraw anything.
+final class PeakHold {
+    private var peak: Float = 0
+
+    func feed(_ value: Float) {
+        peak = max(peak, value)
+    }
+
+    /// The held peak; the next interval starts from nothing.
+    func take() -> Float {
+        defer { peak = 0 }
+        return peak
+    }
+}
+
+/// The timeline's zoom, kept in one place for the bar and the keys.
+enum TimelineZoom {
+    static let range: ClosedRange<Double> = 0.25...256
+
+    static func zoomed(_ pixelsPerBeat: Double, by factor: Double) -> Double {
+        min(max(pixelsPerBeat * factor, range.lowerBound), range.upperBound)
+    }
+}
+
+/// Bar and beat, clock time, and the tempo playing at the playhead - one
+/// framed box, each value with its name under it.
 struct PositionReadout: View {
     let beat: Double
     let tempo: TempoMap
+    /// The master tempo is locked: the tempo shown is the master's.
+    var master = false
 
     var body: some View {
         let seconds = max(0, tempo.seconds(atBeat: beat))
         let whole = max(0, beat)
-        HStack(spacing: 14) {
-            VStack(alignment: .leading, spacing: 0) {
-                Text("\(Int(whole / 4) + 1).\(Int(whole.truncatingRemainder(dividingBy: 4)) + 1)")
-                    .font(.system(size: 17, weight: .semibold, design: .rounded))
-                Text("bar.beat").font(.caption2).foregroundStyle(.secondary)
-            }
-            .frame(width: 64, alignment: .leading)
-            VStack(alignment: .leading, spacing: 0) {
-                Text(String(format: "%d:%04.1f", Int(seconds) / 60, seconds.truncatingRemainder(dividingBy: 60)))
-                    .font(.system(size: 17, weight: .regular, design: .rounded))
-                Text("time").font(.caption2).foregroundStyle(.secondary)
-            }
-            .frame(width: 72, alignment: .leading)
-            VStack(alignment: .leading, spacing: 0) {
-                Text(String(format: "%.2f", tempo.bpm(atBeat: whole)))
-                    .font(.system(size: 17, weight: .regular, design: .rounded))
-                Text("BPM").font(.caption2).foregroundStyle(.secondary)
-            }
-            .frame(width: 64, alignment: .leading)
+        HStack(spacing: 0) {
+            cell("\(Int(whole / 4) + 1).\(Int(whole.truncatingRemainder(dividingBy: 4)) + 1)", "Bar", width: 62)
+            Divider()
+            cell(String(format: "%d:%04.1f", Int(seconds) / 60, seconds.truncatingRemainder(dividingBy: 60)), "Time", width: 78)
+            Divider()
+            cell(String(format: "%.2f", tempo.bpm(atBeat: whole)), master ? "BPM · Master" : "BPM", width: 84)
         }
         .monospacedDigit()
+        .frame(height: 32)
+        .background(RoundedRectangle(cornerRadius: 7).fill(Color.black.opacity(0.28)))
+        .overlay(RoundedRectangle(cornerRadius: 7).stroke(Color.primary.opacity(0.08)))
+        .accessibilityElement(children: .combine)
+    }
+
+    private func cell(_ value: String, _ name: String, width: CGFloat) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(value)
+                .font(.system(size: 14, weight: .semibold, design: .monospaced))
+                .lineLimit(1)
+            Text(name)
+                .font(.system(size: 9))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 10)
+        .frame(width: width, alignment: .leading)
     }
 }
 
-/// Peak meters for the output, the louder channel's peak in dBFS, and an
-/// overload lamp. Given plain values - see the note at the top of the file.
+/// Peak meters for the output and an overload lamp. Given plain values -
+/// see the note at the top of the file.
 struct MeterView: View {
     let left: Float
     let right: Float
     let clipped: Bool
 
     var body: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 8) {
             VStack(spacing: 3) {
                 bar(left)
                 bar(right)
             }
-            .frame(width: 120)
-            Text(readout)
-                .font(.system(size: 10, weight: .medium))
-                .monospacedDigit()
-                .foregroundStyle(.secondary)
-                .frame(width: 34, alignment: .trailing)
-                .help("Peak level in dBFS")
+            .frame(width: 70)
             Text("OL")
                 .font(.system(size: 9, weight: .bold))
                 .foregroundStyle(clipped ? Color.white : Color.secondary.opacity(0.5))
@@ -204,11 +202,6 @@ struct MeterView: View {
                 .background(RoundedRectangle(cornerRadius: 3).fill(clipped ? Color.red : Color.secondary.opacity(0.15)))
                 .help("Lights when the output had to be clipped")
         }
-    }
-
-    private var readout: String {
-        let peak = max(left, right)
-        return peak < 1e-4 ? "−∞" : String(format: "%.1f", 20 * log10(Double(peak)))
     }
 
     /// −48 … 0 dBFS across the width.
@@ -222,7 +215,23 @@ struct MeterView: View {
                 Capsule().fill(color.gradient).frame(width: geometry.size.width * fraction)
             }
         }
-        .frame(height: 5)
+        .frame(height: 4)
+    }
+}
+
+/// The output's peak in dBFS, held over the last half second (OutputMeter).
+struct PeakReadout: View {
+    let peak: Float
+
+    var body: some View {
+        VStack(alignment: .trailing, spacing: 1) {
+            Text(peak < 1e-4 ? "−∞" : String(format: "%.1f", 20 * log10(Double(peak))))
+                .font(.system(size: 12, weight: .semibold, design: .monospaced))
+            Text("dBFS").font(.system(size: 9)).foregroundStyle(.secondary)
+        }
+        .monospacedDigit()
+        .frame(width: 40, alignment: .trailing)
+        .help("Peak level of the output in dBFS: the highest peak of the last half second")
     }
 }
 
@@ -231,13 +240,13 @@ struct ShortTermReadout: View {
     let lufs: Double?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        VStack(alignment: .trailing, spacing: 1) {
             Text(lufs.map { String(format: "%.1f", $0) } ?? "−∞")
-                .font(.system(size: 13, weight: .medium, design: .rounded))
-            Text("LUFS S").font(.caption2).foregroundStyle(.secondary)
+                .font(.system(size: 12, weight: .semibold, design: .monospaced))
+            Text("LUFS-S").font(.system(size: 9)).foregroundStyle(.secondary)
         }
         .monospacedDigit()
-        .frame(width: 48, alignment: .leading)
-        .help("Short-term loudness of the output: the last 3 seconds, K-weighted, after the limiter. Reads about 4 dB below the clip bar's LUFS, because a lane without drawn volume rests at −4 dB.")
+        .frame(width: 44, alignment: .trailing)
+        .help("Short-term loudness of the output: the last 3 seconds, K-weighted, after the limiter. Reads about 4 dB below the inspector's clip loudness, because a lane without drawn volume rests at −4 dB.")
     }
 }

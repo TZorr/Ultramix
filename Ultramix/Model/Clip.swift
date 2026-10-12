@@ -18,7 +18,11 @@
 import Foundation
 
 nonisolated struct Clip: Identifiable, Codable, Sendable, Equatable {
-    static let laneCount = 3
+    /// How many lanes a mix can have, and how many a new one starts with.
+    /// The engine and the knobs are built for the most a mix can have; the
+    /// lanes a mix actually has are `MixDocument.lanes`.
+    static let maxLanes = 6
+    static let defaultLanes = 2
     static let beatsPerBar = 4
     /// Shortest a trim may leave a clip. Shorter than this and the clip is
     /// too narrow to grab to make it longer again.

@@ -39,6 +39,13 @@ enum AppAccent {
     }
 }
 
+extension AppAccent {
+    /// What the main window's controls are tinted with - selected segments,
+    /// buttons switched on, checkboxes: a light grey, so the accent stays
+    /// for what Ultramix draws itself (see `accent`) and keeps its meaning.
+    static let controlTint = Color(white: 0.56)
+}
+
 private struct AccentKey: EnvironmentKey {
     static let defaultValue = Color.accentColor
 }

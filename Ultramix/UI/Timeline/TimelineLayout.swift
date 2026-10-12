@@ -61,7 +61,8 @@ enum DrawStyle: String, CaseIterable, Identifiable {
 }
 
 enum LaneStyle {
-    static let names = ["A", "B", "C"]
+    /// A lane by its number, from 1 - as the user counts them.
+    static func number(_ lane: Int) -> String { "\(lane + 1)" }
 
     /// The colour a lane draws in: the one chosen in the mix, or the lane's
     /// own. Every place that colours something by its lane asks here, with
@@ -73,7 +74,7 @@ enum LaneStyle {
     /// The hex behind `color(_:_:)`.
     static func hex(_ lane: Int, _ lanes: [LaneSettings]) -> String {
         (lanes.indices.contains(lane) ? lanes[lane].color : nil)
-            ?? LaneSettings.defaultColors[lane % LaneSettings.defaultColors.count]
+            ?? LaneSettings.defaultColor(lane)
     }
 
     static func color(hex: String) -> Color {
@@ -86,9 +87,10 @@ struct TimelineLayout {
     static let rulerHeight: CGFloat = 26
     /// The strip of transition bars, between the ruler and the tempo lane.
     static let transitionHeight: CGFloat = 18
-    static let tempoHeight: CGFloat = 110
-    /// Where the clip lanes begin.
-    static let lanesTop = rulerHeight + transitionHeight + tempoHeight
+    /// The tempo lane open, and folded down to a strip that still shows
+    /// the curve and its points.
+    static let tempoOpenHeight: CGFloat = 110
+    static let tempoFoldedHeight: CGFloat = 30
     /// Room before beat 0, so the first clip's edge can be grabbed.
     static let leadingPad: CGFloat = 12
 
@@ -99,13 +101,21 @@ struct TimelineLayout {
     /// set reorders them (see LiveSet.compacted). Everything that places a
     /// lane or finds one under the pointer goes through here, so drawing,
     /// hits and drops follow the order together.
-    var laneOrder: [Int] = Array(0..<Clip.laneCount)
+    var laneOrder: [Int] = Array(0..<Clip.defaultLanes)
     /// The lanes shown with a row per stem under each clip (LaneGeometry).
     var expanded: Set<Int> = []
+    var tempoHeight: CGFloat = TimelineLayout.tempoOpenHeight
+
+    /// Where the clip lanes begin.
+    var lanesTop: CGFloat { Self.rulerHeight + Self.transitionHeight + tempoHeight }
+
+    /// The strip under the last lane where "+ Lane" sits in the header.
+    static let addLaneHeight: CGFloat = 28
 
     /// Each row's height, top to bottom.
     private var heights: [CGFloat] {
-        LaneGeometry.heights(total: Double(size.height - Self.lanesTop), expanded: laneOrder.map { expanded.contains($0) })
+        LaneGeometry.heights(total: Double(size.height - lanesTop - Self.addLaneHeight),
+                             expanded: laneOrder.map { expanded.contains($0) })
             .map { CGFloat($0) }
     }
 
@@ -114,7 +124,7 @@ struct TimelineLayout {
     }
 
     var tempoRect: CGRect {
-        CGRect(x: 0, y: Self.rulerHeight + Self.transitionHeight, width: size.width, height: Self.tempoHeight)
+        CGRect(x: 0, y: Self.rulerHeight + Self.transitionHeight, width: size.width, height: tempoHeight)
     }
 
     /// A transition bar's box in the strip.
@@ -127,13 +137,13 @@ struct TimelineLayout {
     func laneRect(_ lane: Int) -> CGRect {
         let row = laneOrder.firstIndex(of: lane) ?? lane
         let heights = heights
-        let top = heights.prefix(row).reduce(Self.lanesTop, +)
+        let top = heights.prefix(row).reduce(lanesTop, +)
         return CGRect(x: 0, y: top, width: size.width, height: row < heights.count ? heights[row] : 0)
     }
 
     func lane(atY y: CGFloat) -> Int? {
-        guard y >= Self.lanesTop else { return nil }
-        var top = Self.lanesTop
+        guard y >= lanesTop else { return nil }
+        var top = lanesTop
         for (row, height) in heights.enumerated() {
             if y < top + height { return laneOrder[row] }
             top += height

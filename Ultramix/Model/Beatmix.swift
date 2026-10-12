@@ -102,10 +102,10 @@ nonisolated enum LibraryAddMode: Hashable, CaseIterable, Sendable {
     var shortTitle: String {
         switch self {
         case .plain: "Add"
-        case .end(.noTransition): "No Trans."
-        case .end(let length): "Mix \(length.beats)"
-        case .playhead(let length): "Here \(length.beats)"
-        case .cue(let length): "Cue \(length.beats)"
+        case .end(.noTransition): "At End · Cut"
+        case .end(let length): "At End · Mix \(length.beats)"
+        case .playhead(let length): "At Playhead · Mix \(length.beats)"
+        case .cue(let length): "At Cue · Mix \(length.beats)"
         }
     }
 
@@ -166,7 +166,7 @@ nonisolated extension MixDocument {
         }
         let outgoing = clips[last.index]
         let bar = Clip.beatsPerBar
-        let lanes = (1...Clip.laneCount).map { (outgoing.lane + $0) % Clip.laneCount }
+        let lanes = (1...laneCount).map { (outgoing.lane + $0) % laneCount }
 
         if beatmix == .noTransition {
             var clip = draft.applied(to: Clip(trackID: trackID, lane: lanes[0], anchorBeat: 0))
@@ -353,7 +353,7 @@ nonisolated extension MixDocument {
         var result = self
         try result.trimClip(outgoing.id, edge: .end, to: Double(end), grids: lookup)
         try result.nudgeClips(followers, byBeats: shift, grids: lookup)
-        let lanes = (1..<Clip.laneCount).map { (outgoing.lane + $0) % Clip.laneCount }
+        let lanes = (1..<laneCount).map { (outgoing.lane + $0) % laneCount }
         guard let lane = lanes.first(where: { candidate in
             clip.lane = candidate
             return result.fits(clip, lookup)

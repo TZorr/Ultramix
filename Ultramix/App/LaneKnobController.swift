@@ -17,7 +17,7 @@ import Observation
 final class LaneKnobController {
     static let shared = LaneKnobController()
 
-    /// 0…127 per knob, lane by lane: A1, A2, B1, B2, C1, C2.
+    /// 0…127 per knob, lane by lane: 1·1, 1·2, 2·1, 2·2 … 6·2.
     private(set) var values: [Int]
     private(set) var setup: KnobSetup
     /// The knob waiting for Learn's next Control Change, if any.

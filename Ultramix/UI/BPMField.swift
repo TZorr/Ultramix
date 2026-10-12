@@ -22,6 +22,9 @@ struct BPMField: View {
     let value: Double
     let fractionDigits: Int
     var width: CGFloat = 80
+    /// Set beside the field. Without it - between a stepper's − and + -
+    /// Return confirms, and the outline still says the draft is pending.
+    var showsSet = true
     let onCommit: (Double) -> Void
 
     @State private var draft = ""
@@ -36,16 +39,26 @@ struct BPMField: View {
 
     var body: some View {
         HStack(spacing: 4) {
+            // Hidden label: in a Form the title would be drawn beside the
+            // field, as a second "BPM" after the number.
             TextField("BPM", text: $draft)
+                .labelsHidden()
                 .textFieldStyle(.roundedBorder)
                 .monospacedDigit()
                 .frame(width: width)
                 .overlay(RoundedRectangle(cornerRadius: 5).stroke(accent, lineWidth: 1.5).opacity(pending ? 0.9 : 0))
                 .onSubmit(commit)
                 .onExitCommand { draft = formatted }
-                .help("Type a tempo, then Set or Return. Escape discards it.")
-            Button("Set", action: commit)
-                .disabled(!canSet)
+                .help(showsSet ? "Type a tempo, then Set or Return. Escape discards it."
+                               : "Type a tempo, then Return. Escape discards it.")
+            // Only while there is something to set: a Set that is always
+            // there, greyed out, read as a control that did not work.
+            if showsSet {
+                Button("Set", action: commit)
+                    .disabled(!canSet)
+                    .opacity(pending ? 1 : 0)
+                    .accessibilityHidden(!pending)
+            }
         }
         .onAppear {
             draft = formatted

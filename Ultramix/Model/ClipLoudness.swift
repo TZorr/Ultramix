@@ -3,7 +3,7 @@
 //  Ultramix
 //
 //  How loud a clip plays, and the gain that makes it as loud as the clip it
-//  follows: the clip bar's LUFS readout and its Match button.
+//  follows: the inspector's loudness readout and its Match button.
 //
 //  Only the clip itself counts - the part of its song it plays, trims
 //  included, and its gain. Lane volume, pan and filter are left out: they are

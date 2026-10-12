@@ -11,7 +11,9 @@
 //  dispatches by the y it started at.
 //
 //  A fixed span - one of four, rather than a free zoom and a Fit that could
-//  put the view past the end of the song. The scroll view holds nothing but a
+//  put the view past the end of the song. It is moved by the grid-fit bar
+//  under it, which doubles as the overview; there is no second scroll bar
+//  moving the same view. The scroll view holds nothing but a
 //  spacer of the full width; the drawing is one viewport wide and pushed back
 //  by the scroll offset (`TimelinePanel` explains why, and why every pointer
 //  modifier has to come before that offset).
@@ -23,6 +25,15 @@
 
 import SwiftUI
 import AppKit
+
+/// The strip's marks, in the colours its legend shows them in.
+enum StripColors {
+    static let bar = Color.white.opacity(0.8)
+    static let beat = Color.white.opacity(0.22)
+    static let barOne = Color(red: 0.96, green: 0.68, blue: 0.24)
+    static let offGrid = Color(red: 1.0, green: 0.42, blue: 0.38)
+    static let onGrid = Color.white.opacity(0.35)
+}
 
 /// Seconds to pixels, and where the three rows sit.
 struct StripLayout {
@@ -69,6 +80,9 @@ struct BeatgridStrip: View {
     /// A spot the editor wants on screen - a cue jumped to, a selection
     /// moved with the arrow keys. Cleared once it is shown.
     @Binding var showSeconds: Double?
+    /// A spot to put in the middle of the view, at once - the overview
+    /// being dragged. Cleared once it is shown.
+    @Binding var centreSeconds: Double?
     /// What is on screen, for the fit bar's outline.
     @Binding var visibleRange: ClosedRange<Double>
 
@@ -153,17 +167,15 @@ struct BeatgridStrip: View {
                     show(seconds, width: geometry.size.width)
                     showSeconds = nil
                 }
+                .onChange(of: centreSeconds) { _, seconds in
+                    guard let seconds else { return }
+                    scrollPosition.scrollTo(x: max(0, CGFloat(seconds * pixelsPerSecond) + StripLayout.pad
+                                                   - geometry.size.width / 2))
+                    centreSeconds = nil
+                }
             }
             .background(Color(white: 0.12))
             .help("Click a gridline to play from it · ⌥-click a kick to put bar one there · drag to mark a stretch")
-            TimelineScrollbar(
-                scrollX: scrollX,
-                contentWidth: StripLayout.contentWidth(duration: grid.durationSeconds,
-                                                       pixelsPerSecond: pixelsPerSecond, viewport: viewportWidth),
-                viewportWidth: viewportWidth
-            ) { x in
-                scrollPosition.scrollTo(x: x)
-            }
         }
     }
 
@@ -422,7 +434,7 @@ struct BeatgridStrip: View {
             var line = Path()
             line.move(to: CGPoint(x: x, y: layout.waveTop))
             line.addLine(to: CGPoint(x: x, y: layout.size.height))
-            let color: Color = k == 0 ? .orange : downbeat ? .white.opacity(0.8) : .white.opacity(0.3)
+            let color: Color = k == 0 ? StripColors.barOne : downbeat ? StripColors.bar : StripColors.beat
             context.stroke(line, with: .color(color), lineWidth: downbeat ? 1.6 : 1)
             if downbeat, spacing * 4 >= 26 {
                 let bar = k / 4 + (k < 0 ? 0 : 1)
@@ -432,13 +444,27 @@ struct BeatgridStrip: View {
         }
     }
 
+    /// The analyser's kicks along the bottom: a faint tick where one sits on
+    /// a gridline, a red dot where it sits beside the grid by more than the
+    /// fit bar calls on the line - so a grid that is off shows as a row of
+    /// dots, and a good one as almost nothing.
     private func ticks(_ context: inout GraphicsContext, _ layout: StripLayout) {
         let visible = layout.visible
-        var ticks = Path()
+        let beat = 60 / max(grid.bpm, 1)
+        var onGrid = Path()
+        var offGrid = Path()
         for t in onsets where visible.contains(t) {
-            ticks.addRect(CGRect(x: layout.x(t) - 0.75, y: layout.size.height - 11, width: 1.5, height: 9))
+            let phase = (t - grid.firstBeatSeconds) / beat
+            let offset = abs(phase - phase.rounded()) * beat
+            let x = layout.x(t)
+            if offset <= GridFitBar.onLine {
+                onGrid.addRect(CGRect(x: x - 0.75, y: layout.size.height - 9, width: 1.5, height: 7))
+            } else {
+                offGrid.addEllipse(in: CGRect(x: x - 3, y: layout.size.height - 9, width: 6, height: 6))
+            }
         }
-        context.fill(ticks, with: .color(Color(red: 1.0, green: 0.4, blue: 0.5)))
+        context.fill(onGrid, with: .color(StripColors.onGrid))
+        context.fill(offGrid, with: .color(StripColors.offGrid))
     }
 
     private func mark(_ context: inout GraphicsContext, _ layout: StripLayout, _ region: LoopRegion) {

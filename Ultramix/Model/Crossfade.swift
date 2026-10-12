@@ -72,36 +72,10 @@ nonisolated enum TransitionStyle: String, CaseIterable, Identifiable, Sendable {
     /// One side of the transition: per kind, the value at `t` - 0 at the
     /// start of the overlap, 1 at its end. Volume is a gain from 0 to 1 of
     /// the lane's full level; pan and the filters are in their own units. A kind
-    /// that is missing is not moved.
+    /// that is missing is not moved. Made of the style's moves
+    /// (TransitionMoves.swift), which a custom transition chooses one by one.
     func recipe(incoming: Bool) -> [AutomationKind: (Double) -> Double] {
-        let fall: (Double) -> Double = { cos($0 * .pi / 2) }
-        let rise: (Double) -> Double = { sin($0 * .pi / 2) }
-        /// Holds full level until `hold`, then falls along the equal-power
-        /// curve over what is left.
-        func late(_ hold: Double) -> (Double) -> Double {
-            { t in t <= hold ? 1 : cos((t - hold) / (1 - hold) * .pi / 2) }
-        }
-        switch (self, incoming) {
-        case (.crossfade, false): return [.volume: fall]
-        case (.crossfade, true): return [.volume: rise]
-        case (.soft, false): return [.volume: { 1 - $0 }]
-        case (.soft, true): return [.volume: { $0 }]
-        case (.tape, false): return [.volume: fall, .lowPass: { 1 - 0.75 * $0 }]
-        case (.air, false): return [.volume: fall, .highPass: { 0.45 * $0 }]
-        case (.underwater, false): return [.volume: late(0.5), .lowPass: { 1 - 0.85 * $0 }]
-        case (.underwater, true): return [.volume: { $0 * $0 }]
-        case (.telephone, false):
-            return [.volume: late(0.4), .highPass: { 0.6 * min($0 / 0.4, 1) },
-                    .lowPass: { 1 - 0.6 * min($0 / 0.4, 1) }]
-        case (.stereoDrift, false): return [.volume: fall, .pan: { -0.8 * $0 }]
-        case (.stereoDrift, true): return [.volume: rise, .pan: { _ in 0 }]
-        case (.stereoHandoff, false): return [.volume: late(0.75), .pan: { -$0 }]
-        case (.stereoHandoff, true): return [.volume: rise, .pan: { 1 - $0 }]
-        case (.filterReveal, false): return [.volume: fall]
-        case (.filterReveal, true):
-            return [.volume: { sin(min($0 / 0.25, 1) * .pi / 2) }, .lowPass: { 1 - 0.85 * (1 - $0) }]
-        case (.tape, true), (.air, true), (.telephone, true): return [.volume: rise]
-        }
+        moves.recipe(incoming: incoming)
     }
 }
 
@@ -149,8 +123,8 @@ nonisolated extension MixDocument {
                                               : "Every clip of these transitions is locked.")
         }
         for transition in open {
-            apply(style, clip: transition.outgoing, from: transition.start, to: transition.end, incoming: false)
-            apply(style, clip: transition.incoming, from: transition.start, to: transition.end, incoming: true)
+            apply(style.moves, clip: transition.outgoing, from: transition.start, to: transition.end, incoming: false)
+            apply(style.moves, clip: transition.incoming, from: transition.start, to: transition.end, incoming: true)
             setMark(over: transition, style: style)
         }
         return open.count
@@ -158,7 +132,7 @@ nonisolated extension MixDocument {
 
     /// One side of a transition on one clip, every kind. `start` and `end`
     /// are timeline beats.
-    mutating func apply(_ style: TransitionStyle, clip id: UUID, from start: Double, to end: Double,
+    mutating func apply(_ moves: TransitionMoves, clip id: UUID, from start: Double, to end: Double,
                                 incoming: Bool) {
         guard let i = editable(id) else { return }
         let anchor = Double(clips[i].anchorBeat)
@@ -169,7 +143,7 @@ nonisolated extension MixDocument {
         let reference = AutomationCurve(kind: .volume, automation: clips[i].automation)
             .value(at: incoming ? localEnd : localStart)
         let full = reference <= Automation.silenceDB + 0.5 ? Automation.defaultVolumeDB : reference
-        let recipe = style.recipe(incoming: incoming)
+        let recipe = moves.recipe(incoming: incoming)
         for kind in AutomationKind.allCases {
             write(kind, into: &clips[i].automation, from: localStart, to: localEnd, full: full, value: recipe[kind])
         }
