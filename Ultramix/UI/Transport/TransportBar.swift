@@ -34,7 +34,9 @@ import SwiftUI
 struct TransportControls: View {
     let session: MixSession
 
-    static let size = CGSize(width: 330, height: 34)
+    /// Room before the first button, inside the toolbar's capsule.
+    static let edge: CGFloat = 12
+    static let size = CGSize(width: 330 + edge, height: 34)
 
     var body: some View {
         TimelineView(.animation(minimumInterval: 1.0 / 30)) { _ in
@@ -72,7 +74,8 @@ struct TransportControls: View {
                 PositionReadout(beat: session.playheadBeat(), tempo: session.tempo,
                                 master: session.document.masterLocked)
             }
-            .frame(width: Self.size.width, height: Self.size.height)
+            .padding(.leading, Self.edge)
+            .frame(width: Self.size.width, height: Self.size.height, alignment: .leading)
         }
         .frame(width: Self.size.width, height: Self.size.height)
     }
@@ -90,7 +93,9 @@ struct OutputMeter: View {
     let session: MixSession
 
     /// Fixed, like the transport's: see there.
-    static let size = CGSize(width: 214, height: 30)
+    /// Room after LUFS-S, inside the toolbar's capsule.
+    static let edge: CGFloat = 12
+    static let size = CGSize(width: 214 + edge, height: 30)
 
     @State private var hold = PeakHold()
 
@@ -111,7 +116,8 @@ struct OutputMeter: View {
                 ShortTermReadout(lufs: session.engine.readShortTermLUFS())
             }
         }
-        .frame(width: Self.size.width, height: Self.size.height)
+        .padding(.trailing, Self.edge)
+        .frame(width: Self.size.width, height: Self.size.height, alignment: .trailing)
     }
 }
 
