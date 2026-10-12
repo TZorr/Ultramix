@@ -152,11 +152,11 @@ struct PositionReadout: View {
         let seconds = max(0, tempo.seconds(atBeat: beat))
         let whole = max(0, beat)
         HStack(spacing: 0) {
-            cell("\(Int(whole / 4) + 1).\(Int(whole.truncatingRemainder(dividingBy: 4)) + 1)", "Bar", width: 62)
+            cell("\(Int(whole / 4) + 1).\(Int(whole.truncatingRemainder(dividingBy: 4)) + 1)", "Bar", width: 74)
             Divider()
-            cell(String(format: "%d:%04.1f", Int(seconds) / 60, seconds.truncatingRemainder(dividingBy: 60)), "Time", width: 78)
+            cell(String(format: "%d:%04.1f", Int(seconds) / 60, seconds.truncatingRemainder(dividingBy: 60)), "Time", width: 84)
             Divider()
-            cell(String(format: "%.2f", tempo.bpm(atBeat: whole)), master ? "BPM · Master" : "BPM", width: 84)
+            cell(String(format: "%.2f", tempo.bpm(atBeat: whole)), master ? "BPM · Master" : "BPM", width: 80)
         }
         .monospacedDigit()
         .frame(height: 32)
@@ -165,11 +165,17 @@ struct PositionReadout: View {
         .accessibilityElement(children: .combine)
     }
 
+    /// Widths measured for the longest value each cell is meant to show at
+    /// full size - bar 1000.4, 99:59.9, 999.99 BPM - with 14 pt semibold
+    /// monospaced digits and the padding. One at five digits exactly, as
+    /// the bar cell was, cut "191.2" to "191…". Anything longer still is
+    /// drawn a little smaller rather than cut.
     private func cell(_ value: String, _ name: String, width: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: 1) {
             Text(value)
                 .font(.system(size: 14, weight: .semibold, design: .monospaced))
                 .lineLimit(1)
+                .minimumScaleFactor(0.75)
             Text(name)
                 .font(.system(size: 9))
                 .foregroundStyle(.secondary)
