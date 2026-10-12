@@ -4,7 +4,7 @@ A native macOS DJ mix editor: build a complete mix on a beat-based timeline
 before the party, hear every transition while you shape it, and bounce the
 finished set to WAV or MP3.
 
-![Ultramix: lane A expanded into drums, bass, vocals and other rows under its clip, each with its own waveform, three clips with two crossfade bars, and the beatgrid editor open below](screenshot.png)
+![Ultramix 1.5: the library as a sidebar on the left, two lanes with a crossfade bar picked and its transition in the inspector on the right, the transport and meter in the middle of the toolbar, and the beatgrid drawer open below](screenshot.png)
 
 Swift, SwiftUI and AVFoundation, Apple Silicon only.
 
@@ -25,6 +25,13 @@ unless you ask it to.
 
 ## What it does
 
+- **The window** — the library as a sidebar on the left, the timeline in
+  the middle, and an inspector on the right for whatever is picked: a clip
+  in sections (grid, tempo, level, key, transition) or a transition bar.
+  The toolbar's middle holds the transport, one readout of bar, time and
+  BPM, and the output level in dBFS and LUFS-S. The tool, the Move mode,
+  Follow Playhead and zoom sit in a bar right above the ruler; a status line
+  runs along the bottom. Library and inspector can each be put away.
 - **Library** — import files or whole folders (MP3, AAC/M4A, WAV, AIFF,
   FLAC). Every track is analysed in the background for tempo, beatgrid and
   first downbeat, and gets a peak/RMS waveform.
@@ -56,30 +63,37 @@ unless you ask it to.
   and the measured tempo is offered at half, as it is and at double, with
   the one nearest your taps preselected; ÷2 and ×2 step through by hand.
   In the beatgrid editor, the library's context menu and the BPM scanner.
-- **Beatgrid editor** — a pane under the timeline, above the clip rows,
-  opened for one track and draggable taller, with the mix still in sight
-  (the clip bar's **Beatgrid** opens the clip or library track picked last,
-  and pressed again folds it); **E** or the Beatgrid button folds it to a
-  one-line bar and back without losing anything. When analysis needs help:
-  manual BPM, Correct BPM, click a kick to set bar one, shift the downbeat
-  by a beat. Corrections are yours; re-analysis never overwrites them. Its
-  waveform scrolls with the bar under it and shows a fixed span — ±2, ±5,
-  ±15 or ±30 seconds — so a beat and a phrase are both reachable and every
-  step draws a known amount. **Play** stops the timeline; with **Cycle** it
-  goes round the marked stretch, and ← → / ⌥← ⌥→ move its ends a beat
-  (⇧: a bar) while it plays.
+- **Beatgrid editor** — a drawer under the timeline, opened for one track
+  (**Edit Beatgrid…** in the inspector or the library, or **⌘E** for the
+  clip or library track picked last) and draggable taller, with the mix
+  still in sight; **E** folds it to a one-line bar and back without losing
+  anything. Its header names the analyser and how confident it was, and
+  whether the grid was edited by hand; the **Analysis** menu analyses again
+  near the mix's tempo or the track's, or reverts to the analysis. When
+  analysis needs help: tempo and bar one as one field each, stepped to the
+  hundredth or the millisecond (⇧ coarser), Correct BPM, a kick clicked for
+  bar one, the downbeat shifted by a beat. Corrections are yours;
+  re-analysis never overwrites them. A legend names the waveform's marks:
+  bar lines strong, beat lines faint, bar 1 in its own colour, and a red dot
+  under every kick that sits beside the grid. The window shows a fixed span
+  — ±2, ±5, ±15 or ±30 seconds — and the grid-fit bar under it, green where
+  the kicks sit on the lines, is the overview to drag it along the song.
+  **Play** stops the timeline; with **Cycle** it goes round the marked
+  stretch, and ← → / ⌥← ⌥→ move its ends a beat (⇧: a bar) while it plays.
 - **Cue points** — up to eight marks per song, set with **1**…**8** where the
   song is, pressed again to go there, **⌥1**…**⌥8** to take one away. They
   say where the next record comes in: **At Cue: Beatmix N** in the library's
-  right-click and ⏎ menus starts the beatmix at the next cue of the record
+  right-click and Return menus starts the beatmix at the next cue of the record
   being mixed out of, on that record's nearest bar line. Saved with the track,
   never written by an analyser.
 - **Loops** — drag across the waveform to mark a stretch (**I** and **O** set
   its ends); **Loop at End** and **Loop at Playhead** put it into the mix as a
-  looping clip, repeated as often as the **×** menu says, with the beatmix the
-  toolbar is set to. The loop is an ordinary clip afterwards: trim it, draw on
+  looping clip, repeated as often as **Repeat** says, with the beatmix length
+  chosen last in the library. The loop is an ordinary clip afterwards: trim it, draw on
   it, replace its transition.
-- **Timeline** — three stereo lanes. Clips are pinned by their first
+- **Timeline** — numbered stereo lanes: a mix starts with Lane 1 and 2,
+  **+ Lane** adds more up to six, and **− Lane** takes the bottom one away
+  while it is empty. Each lane has its own colour. Clips are pinned by their first
   downbeat and snap to bar lines, so bars stay aligned whatever the intros
   hold. Trim, split, duplicate, loop and mute clips; everything is undoable.
   The mouse wheel zooms around the pointer (⇧ scrolls sideways), as do a
@@ -88,11 +102,12 @@ unless you ask it to.
   point, and the mix ramps between them. The tempo changes only on beat
   boundaries, where the transient hides it, and every clip follows it through
   pitch-preserving time-stretching.
-- **Master tempo** — type a tempo at the head of the tempo strip and click
+- **Master tempo** — type a tempo at the head of the tempo lane (which folds
+  to a thin strip when it is not needed) and click
   the lock: the whole mix plays at that one tempo, and every tempo point sits
   on it; dragging any point moves the master. Unlock, and each point has its
   own tempo back - the lock never overwrites them.
-- **Key shift** — **Key − / +** in the clip bar plays a clip up to six
+- **Key shift** — **Transpose − / +** in the inspector plays a clip up to six
   semitones higher or lower, showing the Camelot code of the key it then plays
   in, and **Fine − / +** tunes it in steps of 5 cents, up to 50 either way, for
   a record a little off concert pitch. The length, the beatgrid and every
@@ -114,7 +129,16 @@ unless you ask it to.
 - **Transition bars** — every transition and beatmix gets a bar in a strip
   under the ruler, like a cycle range in a DAW. Drag its ends or the whole bar
   and the transition is written again there; right-click for another style;
-  delete it and every point inside its range goes, on every lane.
+  delete it and every point inside its range goes, on every lane. A picked
+  bar shows in the inspector: which two records it hands over between, its
+  style, its start and end to the beat, and Delete.
+- **Custom transitions** — besides the nine styles, a transition can be
+  made move by move, grouped by **Volume**, **Filter** (low-pass, high-pass)
+  and **Pan**, each chosen for the outgoing and the incoming record: an
+  equal-power or a late fade, a low-pass closing deep on the way out, the
+  next record coming in from the right. The styles are made of the same
+  moves, so changing one move of a style keeps the rest of it. A custom bar
+  keeps its moves when it is dragged.
 - **Automation** — volume (fader taper), pan, low-pass and high-pass on each
   clip, as exact nodes or as drawn step/sine/triangle gestures. **Rec**
   records the lane knobs into the clip under the playhead while the mix
