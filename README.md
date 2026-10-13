@@ -1,5 +1,7 @@
 # Ultramix
 
+<img src="Ultramix/Assets.xcassets/AppIcon.appiconset/icon_256x256@2x.png" width="128" align="right" alt="Ultramix icon: a neon cassette with ULTRAMIX on its label">
+
 A native macOS DJ mix editor: build a complete mix on a beat-based timeline
 before the party, hear every transition while you shape it, and bounce the
 finished set to WAV or MP3.
