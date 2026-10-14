@@ -43,6 +43,11 @@ nonisolated final class PreviewCore: @unchecked Sendable {
     /// Auditioning sits at the mix lanes' resting level, so switching from a
     /// preview to the mix is not a jump in loudness.
     private let gain = Float(pow(10, Automation.defaultVolumeDB / 20))
+    /// The preview volume on top of that, as a linear factor's Float bits.
+    let volume = Atomic<UInt32>(Float(1).bitPattern)
+    /// The factor the last block ended on; the callback's alone. A change
+    /// is ramped over one block, so dragging the slider does not crackle.
+    private var appliedVolume: Float = 1
 
     func makeRenderBlock() -> AVAudioSourceNodeRenderBlock {
         { [self] isSilence, _, frameCount, bufferList -> OSStatus in
@@ -67,14 +72,19 @@ nonisolated final class PreviewCore: @unchecked Sendable {
             let beat = Double(bitPattern: beatSeconds.load(ordering: .relaxed))
             let first = Double(bitPattern: firstBeat.load(ordering: .relaxed))
             let rate = AudioFrames.sampleRate
+            let fromVolume = appliedVolume
+            let toVolume = Float(bitPattern: volume.load(ordering: .relaxed))
+            let step = (toVolume - fromVolume) / Float(max(count, 1))
+            appliedVolume = toVolume
             var f = start
             Unmanaged<AudioFrames>.fromOpaque(raw)._withUnsafeGuaranteedRef { frames in
                 let last = frames.frameCount
                 for i in 0..<count {
                     if cycling && f >= loopEnd { f = loopStart }
                     guard f < last else { break }
-                    var l = frames.samples[2 * f] * gain
-                    var r = frames.samples[2 * f + 1] * gain
+                    let g = toVolume == fromVolume ? gain * toVolume : gain * (fromVolume + step * Float(i + 1))
+                    var l = frames.samples[2 * f] * g
+                    var r = frames.samples[2 * f + 1] * g
                     if clicking && beat > 0 {
                         let t = Double(f) / rate - first
                         let k = (t / beat).rounded(.down)
@@ -118,6 +128,20 @@ final class PreviewPlayer {
         didSet { core.click.store(clickEnabled, ordering: .relaxed) }
     }
 
+    static let volumeKey = "previewVolumeDB"
+    static let volumeRange = -30.0...0.0
+
+    /// The preview volume in dB, on top of the lanes' resting level; 0 is
+    /// unchanged. Shared by every preview through the defaults.
+    var volumeDB: Double = PreviewPlayer.storedVolumeDB() {
+        didSet { core.volume.store(Float(pow(10, volumeDB / 20)).bitPattern, ordering: .relaxed) }
+    }
+
+    static func storedVolumeDB(_ defaults: UserDefaults = .standard) -> Double {
+        let db = defaults.object(forKey: volumeKey) as? Double ?? 0
+        return db.isFinite ? min(max(db, volumeRange.lowerBound), volumeRange.upperBound) : 0
+    }
+
     var isPlaying: Bool { core.playing.load(ordering: .acquiring) }
 
     var positionSeconds: Double {
@@ -133,6 +157,7 @@ final class PreviewPlayer {
     init() {
         let format = AVAudioFormat(standardFormatWithSampleRate: AudioFrames.sampleRate, channels: 2)!
         let node = AVAudioSourceNode(format: format, renderBlock: core.makeRenderBlock())
+        core.volume.store(Float(pow(10, volumeDB / 20)).bitPattern, ordering: .relaxed)
         engine.attach(node)
         engine.connect(node, to: engine.mainMixerNode, format: format)
         // The audition output (see AudioRouting); the router starts the engine.

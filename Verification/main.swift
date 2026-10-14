@@ -4519,6 +4519,31 @@ section("preview cycle: wraps sample-exact, and a seek is not lost") {
     check(!core.playing.load(ordering: .acquiring), "without a cycle it still stops at the end of the song")
 }
 
+section("preview volume: ramped over one block, then held") {
+    let audio = AudioFrames(interleaved: [Float](repeating: 0.5, count: 2 * 1000))
+    let core = PreviewCore()
+    core.audio.store(UnsafeRawPointer(Unmanaged.passUnretained(audio).toOpaque()), ordering: .releasing)
+    let gain = Float(pow(10, Automation.defaultVolumeDB / 20))
+    let format = AVAudioFormat(standardFormatWithSampleRate: AudioFrames.sampleRate, channels: 2)!
+    let block = core.makeRenderBlock()
+    func render(_ count: Int) -> [Float] {
+        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(count))!
+        buffer.frameLength = AVAudioFrameCount(count)
+        var silence: ObjCBool = false
+        var stamp = AudioTimeStamp()
+        _ = block(&silence, &stamp, AVAudioFrameCount(count), buffer.mutableAudioBufferList)
+        return (0..<count).map { buffer.floatChannelData![0][$0] }
+    }
+    core.playing.store(true, ordering: .releasing)
+    check(render(4).allSatisfy { $0 == 0.5 * gain }, "at 0 dB exactly the resting level, as before")
+    core.volume.store(Float(0.5).bitPattern, ordering: .relaxed)
+    let ramp = render(4)
+    check(ramp == [0.875, 0.75, 0.625, 0.5].map { 0.5 * gain * $0 }, "a change glides over one block: \(ramp)")
+    check(render(4).allSatisfy { $0 == 0.25 * gain }, "and then holds")
+    check(abs(PreviewPlayer.storedVolumeDB(UserDefaults(suiteName: "ultramix.verify.preview")!) - 0) < 1e-12,
+          "nothing stored is 0 dB")
+}
+
 section("rec: knob values as automation, and a touch pass on the clip") {
     check(KnobFunction.lowPass.automationValue(0) == 0 && KnobFunction.lowPass.automationValue(127) == 1
           && KnobFunction.highPass.automationValue(127) == 1, "filters over their whole range")

@@ -534,6 +534,7 @@ struct PreviewBar: View {
     let session: MixSession
     let library: Library
     let trackID: UUID?
+    @AppStorage(PreviewPlayer.volumeKey) private var volumeDB = 0.0
 
     var body: some View {
         VStack(spacing: 6) {
@@ -575,19 +576,51 @@ struct PreviewBar: View {
             // What the track can go on to: its beatgrid, or into the mix -
             // the add mode is shown whether or not a track is selected, so
             // the choice can be made before the first one is.
-            HStack(spacing: 8) {
-                Button("Edit Beatgrid…") {
-                    if let id = trackID { session.beatgridRequest = BeatgridRequest(id: id) }
-                }
-                .disabled(trackID.flatMap { library.track($0) }?.state != .done)
-                .help("Edit the selected track's beatgrid in the drawer under the timeline")
-                Spacer(minLength: 4)
-                AddModeMenu(session: session)
+            // In a narrow sidebar the beatgrid button gives up its words,
+            // and at the narrowest the volume its speaker, rather than be
+            // squeezed to a letter.
+            ViewThatFits(in: .horizontal) {
+                actions(compact: false)
+                actions(compact: true)
+                actions(compact: true, speaker: false)
             }
             .controlSize(.small)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
+        .onChange(of: volumeDB, initial: true) { session.preview.volumeDB = PreviewPlayer.storedVolumeDB() }
+    }
+
+    private func actions(compact: Bool, speaker: Bool = true) -> some View {
+        HStack(spacing: 8) {
+            volume(speaker: speaker)
+            Button {
+                if let id = trackID { session.beatgridRequest = BeatgridRequest(id: id) }
+            } label: {
+                if compact { Image(systemName: "ruler") } else { Text("Beatgrid") }
+            }
+            .fixedSize()
+            .disabled(trackID.flatMap { library.track($0) }?.state != .done)
+            .help("Edit the selected track's beatgrid in the drawer under the timeline")
+            Spacer(minLength: 4)
+            AddModeMenu(session: session)
+        }
+    }
+
+    /// How loud auditioning is, on top of the lanes' resting level - some
+    /// masters are far louder than a mix held to a loudness target.
+    private func volume(speaker: Bool) -> some View {
+        HStack(spacing: 3) {
+            if speaker {
+                Image(systemName: volumeDB > -10 ? "speaker.wave.3" : volumeDB > -20 ? "speaker.wave.2" : "speaker.wave.1")
+                    .foregroundStyle(.secondary)
+                    .frame(width: 18, alignment: .leading)
+            }
+            Slider(value: $volumeDB, in: PreviewPlayer.volumeRange)
+                .controlSize(.mini)
+                .frame(minWidth: 44, maxWidth: 80)
+        }
+        .help("Preview volume: \(volumeDB < -0.05 ? "−" : "")\(String(format: "%.0f", abs(volumeDB))) dB")
     }
 }
 
