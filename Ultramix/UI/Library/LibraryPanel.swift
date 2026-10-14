@@ -482,11 +482,20 @@ private struct BPMBound: View {
 struct TrackCell: View {
     let track: Track
     let used: Bool
+    @Environment(\.accent) private var accent
+    @Environment(\.backgroundProminence) private var prominence
+
+    /// The accent, except on a highlighted selection, which is itself drawn
+    /// in the accent and would swallow the dot.
+    private var dot: Color {
+        guard used else { return .clear }
+        return prominence == .increased ? .white : accent
+    }
 
     var body: some View {
         HStack(spacing: 7) {
             Circle()
-                .fill(used ? Color.secondary : Color.clear)
+                .fill(dot)
                 .frame(width: 6, height: 6)
                 .help(used ? "In the mix" : "")
             VStack(alignment: .leading, spacing: 1) {
