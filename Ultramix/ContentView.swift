@@ -40,6 +40,7 @@ struct ContentView: View {
     var body: some View {
         NavigationSplitView(columnVisibility: columns) {
             LibraryPanel(session: session, library: library)
+                .windowSurface()
                 .navigationSplitViewColumnWidth(min: 300, ideal: 320, max: 460)
         } detail: {
             detail
@@ -47,8 +48,10 @@ struct ContentView: View {
         }
         .inspector(isPresented: $showInspector) {
             ClipInspector(session: session, library: library)
+                .windowSurface()
                 .inspectorColumnWidth(min: 270, ideal: 300, max: 380)
         }
+        .toolbarSurface()
         .toolbar {
             ToolbarItem(placement: .navigation) {
                 // Two documents side by side, not a mode: switching costs

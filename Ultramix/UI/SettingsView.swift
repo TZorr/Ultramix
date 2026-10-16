@@ -23,6 +23,7 @@ struct SettingsView: View {
 
     @AppStorage("appearance") private var appearance: AppAppearance = .dark
     @AppStorage("accentColor") private var accentHex = AppAccent.system
+    @AppStorage(WindowSurface.opaqueKey) private var opaqueWindow = false
     @AppStorage(LoudnessTarget.enabledKey) private var targetEnabled = false
     @AppStorage(LoudnessTarget.lufsKey) private var targetLUFS = LoudnessTarget.defaultLUFS
     @AppStorage(BeatAlgorithm.storageKey) private var beatAlgorithm: BeatAlgorithm = BeatAlgorithm.fallback
@@ -108,6 +109,12 @@ struct SettingsView: View {
                     }
                 }
                 .pickerStyle(.segmented)
+
+                Toggle("Transparent window", isOn: Binding(get: { !opaqueWindow }, set: { opaqueWindow = !$0 }))
+                Text("Off: the library, the inspector and the bars are drawn solid instead of letting the desktop show through.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
 
                 LabeledContent("Accent Color") {
                     HStack(spacing: 10) {

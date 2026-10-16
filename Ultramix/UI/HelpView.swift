@@ -64,6 +64,7 @@ struct HelpView: View {
             List(HelpTopic.allCases, selection: $topic) { topic in
                 Label(topic.title, systemImage: topic.symbol).tag(topic)
             }
+            .windowSurface()
             .navigationSplitViewColumnWidth(min: 190, ideal: 210)
         } detail: {
             ScrollView {
@@ -296,7 +297,7 @@ struct HelpView: View {
         VStack(alignment: .leading, spacing: 14) {
             HelpText("Ultramix › Settings… (⌘,). The settings belong to this Mac, not to a working directory: the same drive on another Mac does not repaint the app there, nor play its mixes at another level.")
             HelpHeading("Appearance")
-            HelpText("System, light or dark, and the accent colour. Ultramix draws the tempo curve, the selection rectangle and everything selected with this colour, and tints its own controls with it. The menu bar and the system's own panels keep the system colour.")
+            HelpText("System, light or dark, and the accent colour. Ultramix draws the tempo curve, the selection rectangle and everything selected with this colour, and tints its own controls with it. The menu bar and the system's own panels keep the system colour. With Transparent window switched off, the library, the inspector, the toolbar and the bars are drawn solid, so what lies behind the window no longer tints them.")
             HelpHeading("Beat Detection")
             HelpText("Used for songs imported from now on and for Analyse Again. Beat This!, the default, is a neural network (CPJKU, small model) that decides the tempo, the beat and bar one; Ultramix's kick fit then places the lines. It answers the musical questions - half or double tempo, on or off the beat, which beat is the one - that the kick fit alone cannot. Songs already analysed keep their grid, and a grid corrected by hand is never replaced.")
             HelpHeading("Loudness")
@@ -382,7 +383,7 @@ struct HelpView: View {
                 ("Cache", "Decoded audio, waveforms and loudness - safe to delete; it is rebuilt."),
             ])
             HelpText("**Eject an external drive before unplugging it.** Ultramix closes the working directory when the drive is ejected; pulling the cable while a mix is open can crash it.")
-            HelpText("Appearance, accent colour, the beat analyser and the loudness target are in Settings (⌘,) and stay with the Mac.")
+            HelpText("Appearance, transparency, accent colour, the beat analyser and the loudness target are in Settings (⌘,) and stay with the Mac.")
         }
     }
 

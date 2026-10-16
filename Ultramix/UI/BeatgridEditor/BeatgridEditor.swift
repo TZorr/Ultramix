@@ -225,7 +225,7 @@ struct BeatgridEditor: View {
         .controlSize(.small)
         .padding(.horizontal, 14)
         .frame(height: 40)
-        .background(.bar)
+        .barSurface()
     }
 
     /// Which analyser found the grid and how sure it was, coloured by that:

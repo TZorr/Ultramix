@@ -32,7 +32,7 @@ struct TimelineBar: View {
         .padding(.horizontal, 12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .frame(height: Self.height)
-        .background(.bar)
+        .barSurface()
     }
 
     private func row(compact: Bool) -> some View {
@@ -144,7 +144,7 @@ struct StatusLine: View {
         .foregroundStyle(.secondary)
         .padding(.horizontal, 12)
         .frame(height: 22)
-        .background(.bar)
+        .barSurface()
     }
 
     private var summary: String {
