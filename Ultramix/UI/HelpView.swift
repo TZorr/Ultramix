@@ -143,6 +143,30 @@ struct HelpView: View {
                 ("Key", "The key the analysis hears, as its Camelot code and name (8A Am): the same number, or one either side with the same letter, mixes in key. Dimmed where another key fits almost as well. Click the header to sort round the wheel. It is an estimate - check by ear."),
                 ("Right-click the header", "Show or hide columns: BPM, Time, Key, LUFS (the whole song's loudness, before any trim or gain) and Type (the file format). Drag a header to reorder, drag its edge to resize. Ultramix remembers the layout on this Mac."),
             ])
+            HelpHeading("Crates")
+            HelpText("Crates are your own lists of library tracks, kept in folders, in the list of sources above the table under **Ultramix Library**. A track can be in any number of crates and stays one track in the library. Choose a crate and the table lists its tracks in the order they came in; a click on a column header sorts them, and the search and the BPM range work as in the library. In the Live tab, Auto plays the crate as it is listed. Crates belong to the working directory (Ultramix Crates.json).")
+            HelpKeys([
+                ("Right-click Ultramix Library", "New Crate…, New Folder…"),
+                ("Right-click a folder", "New Crate… or New Folder… inside it, Rename…, Move To, Delete Folder…"),
+                ("Right-click a crate", "Rename…, Move To (a folder, or Top Level), Delete Crate…. Deleting asks first when it holds tracks; the tracks stay in the library."),
+                ("Drag onto a crate", "Add tracks from the library, or songs from Apple Music - those not in the library yet are imported on the way."),
+                ("Right-click tracks › Add to Crate", "Into any crate, or into a new one made of the selection. In a crate: Remove from Crate, which leaves the track in the library."),
+                ("Remove from Library", "Takes the track out of every crate as well."),
+            ])
+            HelpHeading("Apple Music")
+            HelpText("Open **Apple Music** in the list of sources above the table to see the Music app's songs, folders and playlists; Ultramix asks once for access to your music. A song comes into a mix the way any file does: it is imported first - copied or read where it lies, as Settings › Library says - and analysed. Until then the BPM column shows Music's own figure, in grey.")
+            HelpKeys([
+                ("Double-click  /  Return", "A song already in the library (✓) goes into the mix the way the Return menu at the bottom of the library says; any other is imported."),
+                ("Drag onto Ultramix Library", "Import the dragged songs."),
+                ("Drag onto a lane", "The song goes into the mix there. One not yet in the library is imported first and appears once its analysis is done; the status line under the timeline counts the songs on their way."),
+                ("Right-click a song", "Add to Library, Show in Finder."),
+                ("Right-click a playlist", "Add Playlist (or Folder) to Library: every song in it that can come in. Import as Crate: the same, kept as a crate in Music's order - a folder of playlists becomes a folder of crates."),
+                ("Right-click songs › Add to Crate", "Import them where needed and put them into a crate."),
+                ("Right-click Apple Music or Songs", "Reload, after changing the library in Music."),
+                ("✓", "Already in the library; its tempo and key are Ultramix's own."),
+                ("🔒", "Protected by an Apple Music subscription (DRM). Its audio cannot be read, so it cannot be analysed, stretched or bounced; buy it or use your own file."),
+                ("☁︎", "Only in the cloud. Download it in Music first, then reload."),
+            ])
             HelpHeading("Status icons")
             HelpKeys([
                 ("●", "The track is in the mix (it cannot be removed from the library)."),

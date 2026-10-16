@@ -149,9 +149,13 @@ struct StatusLine: View {
 
     private var summary: String {
         let clips = session.document.clips.count
-        guard clips > 0 else { return "No clips · drag tracks from the library onto a lane" }
+        // A dropped song stays invisible until it is analysed; this says
+        // that something is on its way.
+        let waiting = session.awaitingPlacement.count
+        let prefix = waiting == 0 ? "" : "Analysing \(waiting) song\(waiting == 1 ? "" : "s") for the mix · "
+        guard clips > 0 else { return prefix + "No clips · drag tracks from the library onto a lane" }
         let seconds = max(0, session.tempo.seconds(atBeat: session.endBeat))
-        return "\(clips) clip\(clips == 1 ? "" : "s") · \(Int(seconds) / 60):\(String(format: "%02d", Int(seconds) % 60))"
+        return prefix + "\(clips) clip\(clips == 1 ? "" : "s") · \(Int(seconds) / 60):\(String(format: "%02d", Int(seconds) % 60))"
     }
 
     private var selection: String {

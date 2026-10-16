@@ -7,6 +7,11 @@
 //  chosen in the bottom bar), or from the context menu; files go into the
 //  library by dropping them on the table or through +.
 //
+//  Above the table, the sources (SourceTree): Ultramix's own library with
+//  the user's crates, and the Music app's songs and playlists. The search
+//  and the tempo range work on whichever is listed; a crate lists its tracks
+//  in the order they came in until a column header sorts them.
+//
 //  Search matches every typed word anywhere in artist, title and path,
 //  ignoring case and accents: people remember a record by a fragment, and
 //  sometimes by the folder it is in.
@@ -25,6 +30,8 @@ extension Track {
 struct LibraryRow: Identifiable {
     let track: Track
     let lufs: Double?
+    /// Its place in the crate listed; 0 in the library itself.
+    var position = 0
 
     var id: UUID { track.id }
     /// Unmeasured tracks sort first, like unanalysed ones by BPM.
@@ -70,30 +77,213 @@ struct LibraryPanel: View {
     @State private var columns = TableColumnCustomization<LibraryRow>()
     @AppStorage("libraryColumns") private var storedColumns = Data()
     @AppStorage(BeatAlgorithm.storageKey) private var beatAlgorithm: BeatAlgorithm = BeatAlgorithm.fallback
+    /// Always the library at launch: a playlist left chosen yesterday would
+    /// hide the library behind a list that may not even be read yet.
+    @State private var source: LibrarySource = .library
+    /// Whether Apple Music is open in the tree, and so read. Kept: someone
+    /// who works from their playlists wants them there next time.
+    @AppStorage("appleMusicExpanded") private var appleExpanded = false
+    @AppStorage("sourceTreeHeight") private var treeHeight = 220.0
+    @State private var appleSelection: Set<UInt64> = []
+    /// Empty: in the playlist's own order, as Music shows it.
+    @State private var appleSort: [KeyPathComparator<AppleMusicRow>] = []
+    private var music = AppleMusicSource.shared
+    /// The tree with everything closed: its two rows and no more.
+    private static let collapsedTreeHeight = 64.0
+    @AppStorage("cratesExpanded") private var cratesExpanded = true
+    /// A crate's own sort, apart from the library's: it starts in the
+    /// crate's order every time a crate is chosen.
+    @State private var crateSort = Self.crateOrder
+    private static let crateOrder = [KeyPathComparator(\LibraryRow.position)]
+    @State private var naming: CrateNaming?
+    @State private var nameDraft = ""
+    /// A crate or folder with something in it, waiting to be confirmed
+    /// before it is deleted.
+    @State private var deleting: UUID?
+
+    /// The sort of whatever the table lists.
+    private var activeSort: Binding<[KeyPathComparator<LibraryRow>]> {
+        source.crate != nil ? $crateSort : $sortOrder
+    }
 
     private var rows: [LibraryRow] {
         let words = search.split(whereSeparator: \.isWhitespace).map(String.init)
         let filter = bpmFilter
+        let positions: [UUID: Int]? = source.crate.map { crate in
+            Dictionary(library.crates.tracks(in: crate).enumerated().map { ($1, $0) }, uniquingKeysWith: { a, _ in a })
+        }
         let matching = library.tracks.filter { track in
+            if let positions, positions[track.id] == nil { return false }
             guard filter.matches(track.bpm) else { return false }
             guard !words.isEmpty else { return true }
             let text = "\(track.artist ?? "") \(track.title) \(track.path)"
             return words.allSatisfy { text.range(of: $0, options: [.caseInsensitive, .diacriticInsensitive]) != nil }
         }
         return matching
-            .map { LibraryRow(track: $0, lufs: library.loudness[$0.id]?.songLUFS) }
-            .sorted(using: sortOrder)
+            .map { LibraryRow(track: $0, lufs: library.loudness[$0.id]?.songLUFS, position: positions?[$0.id] ?? 0) }
+            .sorted(using: activeSort.wrappedValue)
+    }
+
+    /// The songs of the Apple Music entry chosen, searched and filtered like
+    /// the library. A song already imported is matched to its track by the
+    /// path it was imported from.
+    private var appleRows: [AppleMusicRow] {
+        let ids: [UInt64]
+        switch source {
+        case .library, .crate: return []
+        case .appleSongs: ids = music.allSongs
+        case .applePlaylist(let id): ids = music.playlist(id)?.songs ?? []
+        }
+        var imported: [String: Track] = [:]
+        for track in library.tracks {
+            if let path = track.sourcePath, imported[path] == nil { imported[path] = track }
+        }
+        let words = search.split(whereSeparator: \.isWhitespace).map(String.init)
+        let filter = bpmFilter
+        let rows = ids.compactMap { id -> AppleMusicRow? in
+            guard let song = music.songs[id] else { return nil }
+            let row = AppleMusicRow(song: song, track: song.path.flatMap { imported[$0] })
+            guard filter.matches(row.bpm) else { return nil }
+            guard !words.isEmpty else { return row }
+            let text = "\(song.artist ?? "") \(song.title) \(song.album ?? "")"
+            return words.allSatisfy { text.range(of: $0, options: [.caseInsensitive, .diacriticInsensitive]) != nil } ? row : nil
+        }
+        return appleSort.isEmpty ? rows : rows.sorted(using: appleSort)
+    }
+
+    /// Imports the songs that can come in, in the order given; the rest are
+    /// left out quietly - the list already says why.
+    private func importSongs(_ ids: [UInt64]) {
+        let urls = ids.compactMap { music.songs[$0] }.filter { $0.block == nil }.compactMap(\.url)
+        guard !urls.isEmpty else { return }
+        library.importItems(urls)
+    }
+
+    /// Double-click and Return in the Apple Music list: songs in the library
+    /// go into the mix the way the Return menu says, as from the library;
+    /// the others are imported.
+    private func activateSongs(_ ids: [UInt64]) {
+        let chosen = Set(ids)
+        let rows = appleRows.filter { chosen.contains($0.id) }
+        importSongs(rows.filter { $0.track == nil }.map(\.id))
+        let tracks = rows.compactMap(\.track).map(\.id)
+        if !tracks.isEmpty { session.add(tracks, mode: session.libraryAddMode) }
+    }
+
+    /// A dragged song brings the rest of the selection along when it is part
+    /// of it, as a drag out of a list does everywhere else.
+    private func dropped(_ id: UInt64) -> [UInt64] {
+        guard appleSelection.contains(id) else { return [id] }
+        return appleRows.map(\.id).filter { appleSelection.contains($0) }
+    }
+
+    /// The library tracks for songs from Apple Music, importing those not
+    /// in the library yet; songs that cannot come in are left out.
+    private func tracksForSongs(_ ids: [UInt64]) -> [UUID] {
+        let urls = ids.compactMap { music.songs[$0] }.filter { $0.block == nil }.compactMap(\.url)
+        guard !urls.isEmpty else { return [] }
+        return library.importResolving(urls).compactMap { $0 }
+    }
+
+    /// A playlist from Music as a crate, a folder as a folder of crates,
+    /// its songs imported where they are not in the library yet.
+    private func importAsCrates(_ playlist: AppleMusicPlaylist) {
+        let pairs = playlist.songs.compactMap { id -> (UInt64, URL)? in
+            guard let song = music.songs[id], song.block == nil, let url = song.url else { return nil }
+            return (id, url)
+        }
+        var tracks: [UInt64: UUID] = [:]
+        for (pair, track) in zip(pairs, library.importResolving(pairs.map(\.1))) {
+            if let track { tracks[pair.0] = track }
+        }
+        library.editCrates { $0.importPlaylist(playlist, into: nil) { tracks[$0] } }
+        cratesExpanded = true
+    }
+
+    /// A dragged track brings the rest of the selection along when it is
+    /// part of it.
+    private func draggedTracks(_ id: UUID) -> [UUID] {
+        guard library.selection.contains(id) else { return [id] }
+        return ordered(library.selection)
+    }
+
+    /// Tracks or Apple Music songs dropped on a crate.
+    private func addDropped(_ items: [String], to crate: UUID) -> Bool {
+        var ids: [UUID] = []
+        for item in items {
+            if let id = UUID(uuidString: item) {
+                ids += draggedTracks(id)
+            } else if let song = AppleMusicDrag.id(item) {
+                ids += tracksForSongs(dropped(song))
+            }
+        }
+        guard !ids.isEmpty else { return false }
+        library.editCrates { $0.add(ids, to: crate) }
+        return true
+    }
+
+    private func startNaming(_ request: CrateNaming) {
+        nameDraft = request.initialName
+        naming = request
+    }
+
+    /// A new crate at the top, of the tracks given once it is named.
+    private func newCrate(_ tracks: @escaping () -> [UUID]) {
+        startNaming(CrateNaming(kind: .new(folder: false, parent: nil, tracks: tracks), title: "New Crate",
+                                initialName: library.crates.freeName("New Crate", in: nil)))
+    }
+
+    private func commitNaming() {
+        guard let request = naming else { return }
+        naming = nil
+        switch request.kind {
+        case .new(let folder, let parent, let tracks):
+            let ids = tracks()
+            let name = nameDraft
+            library.editCrates { $0.add(name: name, folder: folder, in: parent, tracks: ids) }
+            cratesExpanded = true
+        case .rename(let id):
+            let name = nameDraft
+            library.editCrates { $0.rename(id, to: name) }
+        }
+    }
+
+    /// An empty crate or folder goes at once; one with something in it is
+    /// confirmed first.
+    private func requestDelete(_ id: UUID) {
+        guard let crate = library.crates.crate(id) else { return }
+        let empty = crate.isFolder ? library.crates.descendants(of: id).isEmpty : crate.tracks.isEmpty
+        if empty {
+            library.editCrates { $0.delete(id) }
+        } else {
+            deleting = id
+        }
+    }
+
+    private var deleteTitle: String {
+        guard let id = deleting, let crate = library.crates.crate(id) else { return "" }
+        return crate.isFolder ? "Delete the folder “\(crate.name)”?" : "Delete the crate “\(crate.name)”?"
+    }
+
+    private var deleteMessage: String {
+        guard let id = deleting, let crate = library.crates.crate(id) else { return "" }
+        if crate.isFolder {
+            let inside = library.crates.descendants(of: id).count
+            return "Everything in it goes too - \(inside) crate\(inside == 1 ? "" : "s") and folder\(inside == 1 ? "" : "s"). The tracks stay in the library."
+        }
+        return "Its \(crate.tracks.count) track\(crate.tracks.count == 1 ? "" : "s") stay in the library."
     }
 
     private func setBPMOrder(_ on: Bool) {
         guard on != bpmOrder else { return }
+        let sort = activeSort
         if on {
-            sortBeforeBPM = sortOrder
+            sortBeforeBPM = sort.wrappedValue
             bpmOrder = true
-            sortOrder = Self.bpmSort
+            sort.wrappedValue = Self.bpmSort
         } else {
             bpmOrder = false
-            if let previous = sortBeforeBPM { sortOrder = previous }
+            if let previous = sortBeforeBPM { sort.wrappedValue = previous }
             sortBeforeBPM = nil
         }
     }
@@ -101,6 +291,7 @@ struct LibraryPanel: View {
     var body: some View {
         let used = session.usedTracks
         let visible = rows
+        let appleVisible = appleRows
         VStack(spacing: 0) {
             HStack(spacing: 8) {
                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
@@ -123,124 +314,159 @@ struct LibraryPanel: View {
                 .padding(.horizontal, 12)
                 .padding(.bottom, 8)
             Divider()
-            // The drag sits on the row, not on the cell in front: a
-            // `.draggable` view takes the mouse down before the table sees
-            // it, so clicks on the title missed while clicks on the BPM
-            // column did not.
-            Table(of: LibraryRow.self, selection: $library.selection, sortOrder: $sortOrder,
-                  columnCustomization: $columns) {
-                TableColumn("Track", value: \.track.displayName) { row in
-                    TrackCell(track: row.track, used: used.contains(row.id))
-                }
-                // The column people read by: it takes what the others leave.
-                .width(min: 100, ideal: 150)
-                .customizationID("track")
-                // Without it a row has nothing to recognise it by.
-                .disabledCustomizationBehavior(.visibility)
-                TableColumn("BPM", value: \.track.bpmSortValue) { row in
-                    Text(row.track.bpm.map { String(format: "%.2f", $0) } ?? "–")
-                        .monospacedDigit()
-                        // A corrected grid shows as the pencil in the
-                        // status column, not as a coloured number.
-                        .foregroundStyle(Color.primary)
-                }
-                .width(58)
-                .customizationID("bpm")
-                TableColumn("Time", value: \.track.durationSeconds) { row in
-                    Text(row.track.durationSeconds > 0
-                         ? "\(Int(row.track.durationSeconds) / 60):\(String(format: "%02d", Int(row.track.durationSeconds) % 60))"
-                         : "–")
-                        .monospacedDigit()
-                        .foregroundStyle(.secondary)
-                }
-                .width(44)
-                .customizationID("time")
-                TableColumn("Key", value: \.keySortValue) { row in
-                    KeyCell(analysis: row.track.key)
-                }
-                .width(64)
-                .customizationID("key")
-                TableColumn("LUFS", value: \.lufsSortValue) { row in
-                    Text(row.lufs.map { String(format: "%.1f", $0) } ?? "–")
-                        .monospacedDigit()
-                        .foregroundStyle(.secondary)
-                        .help("Integrated loudness of the whole song, before any trim or gain")
-                }
-                .width(44)
-                .customizationID("lufs")
-                .defaultVisibility(.hidden)
-                TableColumn("Type", value: \.track.fileType) { row in
-                    Text(row.track.fileType).foregroundStyle(.secondary)
-                }
-                .width(40)
-                .customizationID("type")
-                .defaultVisibility(.hidden)
-                TableColumn("") { row in
-                    StatusIcon(track: row.track, busy: library.busy.contains(row.id),
-                               separating: library.separating[row.id])
-                }
-                .width(18)
-                .customizationID("status")
-                .disabledCustomizationBehavior(.visibility)
-            } rows: {
-                ForEach(visible) { row in
-                    TableRow(row).draggable(row.id.uuidString)
-                }
+            let treeOpen = appleExpanded || (cratesExpanded && !library.crates.items.isEmpty)
+            SourceTree(source: $source, appleExpanded: $appleExpanded, cratesExpanded: $cratesExpanded,
+                       library: library,
+                       actions: SourceTreeActions(importSongs: importSongs, importAsCrates: importAsCrates,
+                                                  draggedSongs: dropped, addDropped: addDropped,
+                                                  name: startNaming, delete: requestDelete))
+                .frame(height: treeOpen ? treeHeight : Self.collapsedTreeHeight)
+            if treeOpen {
+                SourceTreeResizeHandle(height: $treeHeight)
+            } else {
+                Divider()
             }
-            // Beside the table's own click handling, not instead of it:
-            // selection and dragging stay the table's.
-            .simultaneousGesture(TapGesture().onEnded { listFocused = true })
-            // A new table for every search: filtering left cells blank
-            // until they were scrolled away and back. Accessibility had the
-            // right text every time, so the table held the new content and
-            // only failed to redraw the cells it reused; a fresh identity
-            // reuses none. Selection and column layout are bindings and
-            // survive. The tempo range filters the same rows, so it is part
-            // of the identity too.
-            .id(TableIdentity(search: search, bpm: bpmFilter))
-            .task {
-                if let stored = try? JSONDecoder().decode(TableColumnCustomization<LibraryRow>.self, from: storedColumns) {
-                    columns = stored
-                }
-            }
-            .onChange(of: columns) { _, changed in
-                if let data = try? JSONEncoder().encode(changed) { storedColumns = data }
-            }
-            // What Auto follows: the list as it is on screen.
-            .onChange(of: visible.map(\.id), initial: true) { _, ids in library.visibleOrder = ids }
-            // A header clicked by hand is a sort of its own: BPM order is off.
-            .onChange(of: sortOrder) { _, order in
-                if bpmOrder, order != Self.bpmSort {
-                    bpmOrder = false
-                    sortBeforeBPM = nil
-                }
-            }
-            .contextMenu(forSelectionType: UUID.self) { ids in
-                menu(ids, used: used)
-            } primaryAction: { ids in
-                // Return and double-click: the mode chosen in the bar below.
-                session.add(ordered(ids), mode: session.libraryAddMode)
-            }
-            .dropDestination(for: URL.self) { urls, _ in
-                library.importItems(urls)
-                return true
-            }
-            .overlay {
-                if library.tracks.isEmpty {
-                    ContentUnavailableView {
-                        Label("No Tracks", systemImage: "music.note.list")
-                    } description: {
-                        Text("Drop audio files or folders here.")
-                    } actions: {
-                        Button("Add Tracks or Folder…") { FilePanels.importTracks(library) }
+            if !source.isAppleMusic {
+                // The drag sits on the row, not on the cell in front: a
+                // `.draggable` view takes the mouse down before the table sees
+                // it, so clicks on the title missed while clicks on the BPM
+                // column did not.
+                Table(of: LibraryRow.self, selection: $library.selection, sortOrder: activeSort,
+                      columnCustomization: $columns) {
+                    TableColumn("Track", value: \.track.displayName) { row in
+                        TrackCell(track: row.track, used: used.contains(row.id))
                     }
-                } else if rows.isEmpty {
-                    ContentUnavailableView("No Matching Tracks",
-                                           systemImage: "line.3.horizontal.decrease.circle",
-                                           description: Text(bpmFilter.isOn
-                                                             ? "Nothing matches the search and the BPM range."
-                                                             : "Nothing matches the search."))
+                    // The column people read by: it takes what the others leave.
+                    .width(min: 100, ideal: 150)
+                    .customizationID("track")
+                    // Without it a row has nothing to recognise it by.
+                    .disabledCustomizationBehavior(.visibility)
+                    TableColumn("BPM", value: \.track.bpmSortValue) { row in
+                        Text(row.track.bpm.map { String(format: "%.2f", $0) } ?? "–")
+                            .monospacedDigit()
+                            // A corrected grid shows as the pencil in the
+                            // status column, not as a coloured number.
+                            .foregroundStyle(Color.primary)
+                    }
+                    .width(58)
+                    .customizationID("bpm")
+                    TableColumn("Time", value: \.track.durationSeconds) { row in
+                        Text(row.track.durationSeconds > 0
+                             ? "\(Int(row.track.durationSeconds) / 60):\(String(format: "%02d", Int(row.track.durationSeconds) % 60))"
+                             : "–")
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                    }
+                    .width(44)
+                    .customizationID("time")
+                    TableColumn("Key", value: \.keySortValue) { row in
+                        KeyCell(analysis: row.track.key)
+                    }
+                    .width(64)
+                    .customizationID("key")
+                    TableColumn("LUFS", value: \.lufsSortValue) { row in
+                        Text(row.lufs.map { String(format: "%.1f", $0) } ?? "–")
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                            .help("Integrated loudness of the whole song, before any trim or gain")
+                    }
+                    .width(44)
+                    .customizationID("lufs")
+                    .defaultVisibility(.hidden)
+                    TableColumn("Type", value: \.track.fileType) { row in
+                        Text(row.track.fileType).foregroundStyle(.secondary)
+                    }
+                    .width(40)
+                    .customizationID("type")
+                    .defaultVisibility(.hidden)
+                    TableColumn("") { row in
+                        StatusIcon(track: row.track, busy: library.busy.contains(row.id),
+                                   separating: library.separating[row.id])
+                    }
+                    .width(18)
+                    .customizationID("status")
+                    .disabledCustomizationBehavior(.visibility)
+                } rows: {
+                    ForEach(visible) { row in
+                        TableRow(row).draggable(row.id.uuidString)
+                    }
                 }
+                // Beside the table's own click handling, not instead of it:
+                // selection and dragging stay the table's.
+                .simultaneousGesture(TapGesture().onEnded { listFocused = true })
+                // A new table for every search: filtering left cells blank
+                // until they were scrolled away and back. Accessibility had the
+                // right text every time, so the table held the new content and
+                // only failed to redraw the cells it reused; a fresh identity
+                // reuses none. Selection and column layout are bindings and
+                // survive. The tempo range filters the same rows, so it is part
+                // of the identity too.
+                .id(TableIdentity(source: source, search: search, bpm: bpmFilter))
+                .task {
+                    if let stored = try? JSONDecoder().decode(TableColumnCustomization<LibraryRow>.self, from: storedColumns) {
+                        columns = stored
+                    }
+                }
+                .onChange(of: columns) { _, changed in
+                    if let data = try? JSONEncoder().encode(changed) { storedColumns = data }
+                }
+                // What Auto follows: the list as it is on screen.
+                .onChange(of: visible.map(\.id), initial: true) { _, ids in library.visibleOrder = ids }
+                // A header clicked by hand is a sort of its own: BPM order is off.
+                .onChange(of: activeSort.wrappedValue) { _, order in
+                    if bpmOrder, order != Self.bpmSort {
+                        bpmOrder = false
+                        sortBeforeBPM = nil
+                    }
+                }
+                .contextMenu(forSelectionType: UUID.self) { ids in
+                    menu(ids, used: used)
+                } primaryAction: { ids in
+                    // Return and double-click: the mode chosen in the bar below.
+                    session.add(ordered(ids), mode: session.libraryAddMode)
+                }
+                .dropDestination(for: URL.self) { urls, _ in
+                    library.importItems(urls)
+                    return true
+                }
+                .overlay {
+                    if library.tracks.isEmpty {
+                        ContentUnavailableView {
+                            Label("No Tracks", systemImage: "music.note.list")
+                        } description: {
+                            Text("Drop audio files or folders here.")
+                        } actions: {
+                            Button("Add Tracks or Folder…") { FilePanels.importTracks(library) }
+                        }
+                    } else if let crate = source.crate, library.crates.tracks(in: crate).isEmpty {
+                        ContentUnavailableView("Empty", systemImage: "rectangle.stack",
+                                               description: Text("Drag tracks onto the crate in the list above, or right-click them › Add to Crate."))
+                    } else if rows.isEmpty {
+                        ContentUnavailableView("No Matching Tracks",
+                                               systemImage: "line.3.horizontal.decrease.circle",
+                                               description: Text(bpmFilter.isOn
+                                                                 ? "Nothing matches the search and the BPM range."
+                                                                 : "Nothing matches the search."))
+                    }
+                }
+            } else {
+                AppleMusicTable(rows: appleVisible, selection: $appleSelection, sortOrder: $appleSort,
+                                library: library, importSongs: importSongs, activate: activateSongs,
+                                addToCrate: { songs, crate in
+                                    let ids = tracksForSongs(songs)
+                                    library.editCrates { $0.add(ids, to: crate) }
+                                },
+                                newCrate: { songs in newCrate { tracksForSongs(songs) } })
+                    .simultaneousGesture(TapGesture().onEnded { listFocused = true })
+                    // A fresh table for every list and search, for the same
+                    // reason as the library's below.
+                    .id(AppleTableIdentity(source: source, search: search, bpm: bpmFilter))
+                    .overlay {
+                        if music.state == .loaded, appleVisible.isEmpty {
+                            ContentUnavailableView(search.isEmpty && !bpmFilter.isOn ? "No Songs" : "No Matching Songs",
+                                                   systemImage: "music.note.list")
+                        }
+                    }
             }
             Divider()
             PreviewBar(session: session, library: library,
@@ -259,6 +485,37 @@ struct LibraryPanel: View {
         .onAppear {
             bpmFilter = BPMFilter(lower: storedLower, upper: storedUpper, includesOctaves: storedOctaves)
         }
+        // Closing Apple Music in the tree goes back to the library rather
+        // than leaving a list on screen whose entry can no longer be seen.
+        .onChange(of: appleExpanded) { _, open in
+            if !open, source.isAppleMusic { source = .library }
+        }
+        .onChange(of: source) { _, now in
+            appleSelection = []
+            // Each list starts in its own order; BPM order belonged to the
+            // list it was switched on in.
+            bpmOrder = false
+            sortBeforeBPM = nil
+            if now.crate != nil { crateSort = Self.crateOrder }
+        }
+        // A crate deleted - or inside a folder deleted - while it is listed.
+        .onChange(of: library.crates) { _, crates in
+            if let id = source.crate, crates.crate(id) == nil { source = .library }
+        }
+        .alert(naming?.title ?? "", isPresented: Binding(get: { naming != nil }, set: { if !$0 { naming = nil } })) {
+            TextField("Name", text: $nameDraft)
+            Button(naming?.confirmTitle ?? "OK") { commitNaming() }
+            Button("Cancel", role: .cancel) { naming = nil }
+        }
+        .confirmationDialog(deleteTitle, isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } })) {
+            Button("Delete", role: .destructive) {
+                if let id = deleting { library.editCrates { $0.delete(id) } }
+                deleting = nil
+            }
+            Button("Cancel", role: .cancel) { deleting = nil }
+        } message: {
+            Text(deleteMessage)
+        }
         .onChange(of: bpmFilter) { _, changed in
             storedLower = changed.lower
             storedUpper = changed.upper
@@ -272,7 +529,13 @@ struct LibraryPanel: View {
         // Only while the panel itself has the focus: in the search field
         // Space is a space, and Return in a BPM field commits the bound.
         .onKeyPress(.return) {
-            guard listFocused, !typing, !library.selection.isEmpty else { return .ignored }
+            guard listFocused, !typing else { return .ignored }
+            if source.isAppleMusic {
+                guard !appleSelection.isEmpty else { return .ignored }
+                activateSongs(appleRows.map(\.id).filter { appleSelection.contains($0) })
+                return .handled
+            }
+            guard !library.selection.isEmpty else { return .ignored }
             session.add(ordered(library.selection), mode: session.libraryAddMode)
             return .handled
         }
@@ -305,6 +568,15 @@ struct LibraryPanel: View {
     /// Moves the selection one row through the list as it is sorted and
     /// filtered on screen.
     private func step(_ direction: Int) -> KeyPress.Result {
+        if source.isAppleMusic {
+            let list = appleRows.map(\.id)
+            guard !list.isEmpty else { return .ignored }
+            let current = appleSelection.count == 1 ? list.firstIndex { $0 == appleSelection.first } : nil
+            let next = current.map { min(max($0 + direction, 0), list.count - 1) }
+                ?? (direction > 0 ? 0 : list.count - 1)
+            appleSelection = [list[next]]
+            return .handled
+        }
         let list = rows
         guard !list.isEmpty else { return .ignored }
         let current = library.selection.count == 1
@@ -371,12 +643,32 @@ struct LibraryPanel: View {
             .disabled(!ids.contains { library.separating[$0] != nil || library.track($0)?.stems != nil })
             .help("Delete the stems to free the space; a clip that plays them separates the song again")
         Divider()
+        AddToCrateMenu(crates: library.crates) { crate in
+            let tracks = ordered(ids)
+            library.editCrates { $0.add(tracks, to: crate) }
+        } newCrate: {
+            let tracks = ordered(ids)
+            newCrate { tracks }
+        }
+        .disabled(ids.isEmpty)
+        if let crate = source.crate, library.crates.crate(crate)?.isFolder == false {
+            Button("Remove from Crate") { library.editCrates { $0.remove(ids, from: crate) } }
+                .disabled(ids.isEmpty)
+        }
+        Divider()
         Button("Remove from Library") { library.remove(ids) }
             .disabled(ids.isEmpty || !ids.isDisjoint(with: used))
     }
 }
 
+private struct AppleTableIdentity: Hashable {
+    let source: LibrarySource
+    let search: String
+    let bpm: BPMFilter
+}
+
 private struct TableIdentity: Hashable {
+    let source: LibrarySource
     let search: String
     let bpm: BPMFilter
 }

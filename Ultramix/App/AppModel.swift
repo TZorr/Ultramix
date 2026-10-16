@@ -83,9 +83,11 @@ final class AppModel {
             live.partner = session
             // A corrected beatgrid or a finished analysis changes what both
             // play.
-            library.onTrackChange = { [weak session, weak live] _ in
+            library.onTrackChange = { [weak session, weak live] id in
                 session?.rebuild()
                 live?.rebuild()
+                session?.placeAwaited(id)
+                live?.placeAwaited(id)
             }
             // The pitch shifts worth rendering, and stems worth preparing:
             // those either session plays.

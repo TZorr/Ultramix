@@ -326,6 +326,48 @@ final class MixSession {
 
     // MARK: - Clips
 
+    /// A song dropped on a lane before it was in the library: where it
+    /// goes once its analysis has found a beatgrid. Nothing is drawn in the
+    /// meantime - the clip cannot be sized without the grid.
+    struct Placement {
+        let lane: Int?
+        let startBeat: Double
+    }
+
+    /// Songs being imported and analysed for a place on the timeline.
+    private(set) var awaitingPlacement: [UUID: Placement] = [:]
+
+    /// Imports a song file and puts it where it was dropped once it is
+    /// analysed - at once if it is in the library already and analysed.
+    /// False when the file is not a song that can be imported.
+    @discardableResult
+    func addFile(_ url: URL, lane: Int?, startBeat: Double) -> Bool {
+        guard let id = library.importResolving([url]).first ?? nil else { return false }
+        awaitingPlacement[id] = Placement(lane: lane, startBeat: startBeat)
+        placeAwaited(id)
+        return true
+    }
+
+    /// Called whenever a track changes: a song waiting for its analysis is
+    /// placed when the analysis is done, and given up when it failed.
+    func placeAwaited(_ trackID: UUID) {
+        guard let placement = awaitingPlacement[trackID] else { return }
+        guard let track = library.track(trackID) else {
+            awaitingPlacement[trackID] = nil
+            return
+        }
+        switch track.state {
+        case .pending, .running:
+            return
+        case .failed:
+            awaitingPlacement[trackID] = nil
+            message = "“\(track.displayName)” could not be read, so it was not put into the mix."
+        case .done:
+            awaitingPlacement[trackID] = nil
+            addTrack(trackID, lane: placement.lane, startBeat: placement.startBeat)
+        }
+    }
+
     func addTrack(_ trackID: UUID, lane: Int? = nil, startBeat: Double? = nil) {
         guard let grid = library.grid(for: trackID) else {
             message = "That track has no beatgrid yet - wait for its analysis to finish."

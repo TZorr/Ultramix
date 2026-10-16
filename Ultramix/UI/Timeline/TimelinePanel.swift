@@ -935,10 +935,20 @@ struct TimelinePanel: View {
         NSCursor.arrow.set()
     }
 
+    /// A track from the library, or a song from Apple Music that is not in
+    /// it yet: imported, and placed here once it is analysed.
     private func drop(_ items: [String], at location: CGPoint, _ layout: TimelineLayout) -> Bool {
-        guard let text = items.first, let id = UUID(uuidString: text) else { return false }
-        session.addTrack(id, lane: layout.lane(atY: location.y), startBeat: max(0, layout.beat(location.x)))
-        return true
+        guard let text = items.first else { return false }
+        let lane = layout.lane(atY: location.y)
+        let beat = max(0, layout.beat(location.x))
+        if let id = UUID(uuidString: text) {
+            session.addTrack(id, lane: lane, startBeat: beat)
+            return true
+        }
+        guard let songID = AppleMusicDrag.id(text),
+              let song = AppleMusicSource.shared.songs[songID], song.block == nil,
+              let url = song.url else { return false }
+        return session.addFile(url, lane: lane, startBeat: beat)
     }
 }
 

@@ -33,10 +33,22 @@ unless you ask it to.
   The toolbar's middle holds the transport, one readout of bar, time and
   BPM, and the output level in dBFS and LUFS-S. The tool, the Move mode,
   Follow Playhead and zoom sit in a bar right above the ruler; a status line
-  runs along the bottom. Library and inspector can each be put away.
+  runs along the bottom. Library and inspector can each be put away, and
+  Settings › Appearance can draw the window without transparency.
 - **Library** — import files or whole folders (MP3, AAC/M4A, WAV, AIFF,
   FLAC). Every track is analysed in the background for tempo, beatgrid and
   first downbeat, and gets a peak/RMS waveform.
+- **Apple Music** — the Music app's songs, folders and playlists as a tree
+  above the library, read-only. Songs are imported like any file, one by
+  one or a whole playlist at a time, and then analysed. Only songs with a
+  file of their own can come in: a song from an Apple Music subscription is
+  protected (DRM), and one only in the cloud has no file yet; both are
+  listed, dimmed, with the reason.
+- **Crates** — your own lists of library tracks, in folders, in the tree
+  above the library. Drag tracks onto a crate, or right-click › Add to
+  Crate; a playlist from Music comes in as a crate (a folder of them as a
+  folder of crates). A crate lists its tracks in the order they came in
+  until a column header sorts them, and Live's Auto plays it as listed.
 - **Two beat analysers** — Settings › Beat Detection. *Beat This!*, the
   default, adds a neural network (small model, 8 MB, run on the Mac's own
   Neural Engine) that decides the tempo, whether a beat is on or off the
@@ -175,6 +187,7 @@ changes it later.
 ```
 <Working directory>/
   Ultramix Library.json   the library: tracks, analysis, corrections
+  Ultramix Crates.json    your crates and folders
   Audio/                  copies of the imported songs
   Mixes/                  saved mixes (.ultramix)
   Bounces/                WAV and MP3 exports
@@ -230,7 +243,8 @@ This is enforced, not just promised: the app runs in the macOS sandbox and
 is built without the network entitlement, so it *cannot* open an outgoing
 connection even if it tried. Its entitlements are the sandbox itself,
 read-write access to the files and folders you pick, and read-only access to
-your music folder — nothing else.
+your music folder — nothing else. The Music library itself is read only
+when you open Apple Music in the sidebar, and macOS asks you first.
 
 App settings live in the normal macOS preferences for the app; the library,
 your mixes and the cache live in the working directory you chose. Song files

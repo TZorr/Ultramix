@@ -5779,6 +5779,144 @@ section("stems: their waveforms, to the song's scale, and their cache names") {
           "a removed track's stem waveforms go")
 }
 
+// MARK: - Apple Music
+
+section("apple music: playlists into their folders, in Music's order") {
+    typealias R = AppleMusicTree.Record
+    let tree = AppleMusicTree.build([
+        R(id: 1, parent: nil, name: "House", isFolder: true, isSmart: false, songs: []),
+        R(id: 2, parent: 1, name: "Deep", isFolder: false, isSmart: false, songs: [10, 11]),
+        R(id: 3, parent: 1, name: "Peak", isFolder: false, isSmart: true, songs: [11, 12]),
+        R(id: 4, parent: nil, name: "Warm-up", isFolder: false, isSmart: false, songs: [13]),
+        R(id: 5, parent: 99, name: "Orphan", isFolder: false, isSmart: false, songs: []),
+        R(id: 6, parent: nil, name: "Empty", isFolder: true, isSmart: false, songs: []),
+        R(id: 7, parent: 1, name: "Sub", isFolder: true, isSmart: false, songs: [14]),
+        R(id: 8, parent: 7, name: "Inner", isFolder: false, isSmart: false, songs: [15]),
+    ])
+    check(tree.map(\.name) == ["House", "Warm-up", "Orphan", "Empty"], "top level in order, orphan kept: \(tree.map(\.name))")
+    check(tree[0].children?.map(\.name) == ["Deep", "Peak", "Sub"], "children in order")
+    check(tree[0].songs == [10, 11, 12, 14], "a folder without its own songs gathers them once each: \(tree[0].songs)")
+    check(tree[0].children?[2].songs == [14], "a folder's own songs are kept as Music lists them")
+    check(tree[0].children?[2].children?.first?.name == "Inner", "folders nest")
+    check(tree[1].children == nil && tree[3].children == [], "a playlist has no children, an empty folder has none listed")
+    check(tree[0].children?[1].isSmart == true && tree[0].children?[1].symbol == "gearshape", "smart playlists keep their kind")
+    let index = AppleMusicTree.index(tree)
+    check(index.count == 8 && index[8]?.name == "Inner", "every playlist found by id, however deep")
+}
+
+section("apple music: a folder inside itself does not loop") {
+    typealias R = AppleMusicTree.Record
+    let tree = AppleMusicTree.build([
+        R(id: 1, parent: 1, name: "Self", isFolder: true, isSmart: false, songs: []),
+        R(id: 2, parent: 3, name: "A", isFolder: true, isSmart: false, songs: []),
+        R(id: 3, parent: 2, name: "B", isFolder: true, isSmart: false, songs: []),
+    ])
+    check(tree.map(\.name) == ["Self"], "its own parent puts it at the top; a closed ring has no way in: \(tree.map(\.name))")
+}
+
+section("apple music: which songs can come in") {
+    let file = URL(fileURLWithPath: "/Music/song.m4a")
+    let there: (URL) -> Bool = { _ in true }
+    let gone: (URL) -> Bool = { _ in false }
+    check(AppleMusicSong.block(protected: false, cloud: false, url: file, exists: there) == nil, "a file of its own comes in")
+    check(AppleMusicSong.block(protected: true, cloud: false, url: file, exists: there) == .protected,
+          "protected even when on disk")
+    check(AppleMusicSong.block(protected: false, cloud: true, url: nil, exists: there) == .cloudOnly, "cloud only")
+    check(AppleMusicSong.block(protected: false, cloud: false, url: nil, exists: there) == .missing, "no file and not in the cloud")
+    check(AppleMusicSong.block(protected: false, cloud: false, url: URL(fileURLWithPath: "/Music/clip.m4v"), exists: there) == .notAudio,
+          "a video is not a song")
+    check(AppleMusicSong.block(protected: false, cloud: true, url: file, exists: gone) == .missing, "a file that is gone")
+    check(AppleMusicSong.block(protected: false, cloud: false, url: URL(string: "https://example.com/a.mp3"), exists: there) == .missing,
+          "only a file URL counts")
+}
+
+// MARK: - Crates
+
+section("crates: folders first, by name, and a folder's tracks gathered once") {
+    var crates = Crates()
+    let a = UUID(), b = UUID(), c = UUID()
+    let house = crates.add(name: "House", folder: true, in: nil)
+    let deep = crates.add(name: "deep", folder: false, in: house, tracks: [a, b, a])
+    let peak = crates.add(name: "Peak", folder: false, in: house, tracks: [b, c])
+    let warm = crates.add(name: "Warm-up", folder: false, in: nil)
+    let zed = crates.add(name: "Zed", folder: true, in: nil)
+    let tree = crates.tree()
+    check(tree.map(\.crate.name) == ["House", "Zed", "Warm-up"], "folders first, then crates: \(tree.map(\.crate.name))")
+    check(tree[0].children?.map(\.crate.name) == ["deep", "Peak"], "by name, ignoring case")
+    check(tree[1].children == [] && tree[2].children == nil, "an empty folder has no children, a crate none at all")
+    check(crates.crate(deep)?.tracks == [a, b], "a track is in a crate once, in the order it came")
+    check(crates.tracks(in: house) == [a, b, c], "a folder lists everything inside it once: \(crates.tracks(in: house))")
+    check(crates.tracks(in: peak) == [b, c] && crates.tracks(in: warm) == [], "a crate lists its own")
+    check(crates.path(peak) == "House / Peak", "the path names the folder")
+    check(crates.crateChoices().map(\.path) == ["House / deep", "House / Peak", "Warm-up"], "only crates can take tracks")
+    check(crates.moveTargets(for: warm).map(\.id) == [house, zed], "folders it can go into")
+    _ = zed
+}
+
+section("crates: adding, removing and forgetting tracks") {
+    var crates = Crates()
+    let a = UUID(), b = UUID(), c = UUID()
+    let one = crates.add(name: "One", folder: false, in: nil, tracks: [a])
+    let two = crates.add(name: "Two", folder: false, in: nil, tracks: [a, b])
+    crates.add([b, c, a], to: one)
+    check(crates.crate(one)?.tracks == [a, b, c], "appended in order, without the one already there")
+    crates.remove([b], from: one)
+    check(crates.crate(one)?.tracks == [a, c] && crates.crate(two)?.tracks == [a, b], "removed from one crate only")
+    crates.forget([a])
+    check(crates.crate(one)?.tracks == [c] && crates.crate(two)?.tracks == [b], "a track gone from the library leaves every crate")
+    let folder = crates.add(name: "Folder", folder: true, in: nil)
+    crates.add([a], to: folder)
+    check(crates.crate(folder)?.tracks == [], "a folder takes no tracks of its own")
+}
+
+section("crates: names, moving and deleting") {
+    var crates = Crates()
+    let top = crates.add(name: "  ", folder: false, in: nil)
+    let second = crates.add(name: "", folder: false, in: nil)
+    check(crates.crate(top)?.name == "New Crate" && crates.crate(second)?.name == "New Crate 2", "default names are numbered")
+    crates.rename(top, to: "  Italo ")
+    crates.rename(second, to: "   ")
+    check(crates.crate(top)?.name == "Italo" && crates.crate(second)?.name == "New Crate 2", "trimmed; a blank name is refused")
+    let outer = crates.add(name: "Outer", folder: true, in: nil)
+    let inner = crates.add(name: "Inner", folder: true, in: outer)
+    let inside = crates.add(name: "Inside", folder: false, in: inner)
+    check(!crates.move(outer, into: inner) && !crates.move(outer, into: outer), "never into itself or what it holds")
+    check(!crates.move(top, into: inside), "never into a crate")
+    check(crates.move(top, into: inner) && crates.crate(top)?.parent == inner, "into a folder")
+    check(crates.move(top, into: nil) && crates.crate(top)?.parent == nil, "back to the top")
+    let orphan = crates.add(name: "Orphan", folder: false, in: inside)
+    check(crates.crate(orphan)?.parent == nil, "a crate as parent puts it at the top")
+    crates.delete(outer)
+    check(crates.crate(inner) == nil && crates.crate(inside) == nil && crates.crate(top) != nil,
+          "deleting a folder deletes what is in it, nothing else")
+}
+
+section("crates: a Music playlist or folder comes in as crates") {
+    var crates = Crates()
+    let a = UUID(), b = UUID()
+    let map: [UInt64: UUID] = [1: a, 2: b]
+    let deep = AppleMusicPlaylist(id: 10, name: "Deep", isFolder: false, isSmart: false, songs: [2, 3, 1], children: nil)
+    let house = AppleMusicPlaylist(id: 11, name: "House", isFolder: true, isSmart: false, songs: [2, 3, 1], children: [deep])
+    let folder = crates.importPlaylist(house, into: nil) { map[$0] }
+    let made = crates.tree()
+    check(made.first?.id == folder && made.first?.crate.isFolder == true, "a folder becomes a folder")
+    check(made.first?.children?.first?.crate.tracks == [b, a], "Music's order, songs without a track left out")
+    let again = crates.importPlaylist(deep, into: nil) { map[$0] }
+    check(crates.crate(again)?.name == "Deep", "a name free at the top is kept")
+    let third = crates.importPlaylist(deep, into: nil) { map[$0] }
+    check(crates.crate(third)?.name == "Deep 2", "a taken name gets a number")
+}
+
+section("crates: the file round-trips and refuses a newer format") {
+    var crates = Crates()
+    let folder = crates.add(name: "Folder", folder: true, in: nil)
+    crates.add(name: "Crate", folder: false, in: folder, tracks: [UUID(), UUID()])
+    let data = try! crates.data()
+    check((try? Crates(data: data)) == crates, "read back as written")
+    let newer = String(data: data, encoding: .utf8)!.replacingOccurrences(of: "\"formatVersion\" : 1", with: "\"formatVersion\" : 99")
+    check((try? Crates(data: Data(newer.utf8))) == nil, "a newer format is not read as an older one")
+}
+
 // MARK: - Summary
 
 print("\(checks) checks, \(failures) failed")

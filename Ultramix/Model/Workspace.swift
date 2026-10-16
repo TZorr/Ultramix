@@ -6,6 +6,7 @@
 //  everything a set of mixes needs.
 //
 //      Ultramix Library.json   the library: tracks, analysis, corrections
+//      Ultramix Crates.json    the user's crates and folders (Crates.swift)
 //      Audio/                  copies of the imported songs
 //      Mixes/                  .ultramix files
 //      Bounces/                WAV and MP3 exports
@@ -21,11 +22,13 @@ import Foundation
 
 nonisolated struct Workspace: Sendable, Equatable {
     static let libraryFileName = "Ultramix Library.json"
+    static let cratesFileName = "Ultramix Crates.json"
 
     let root: URL
 
     var name: String { root.lastPathComponent }
     var libraryFile: URL { root.appendingPathComponent(Self.libraryFileName) }
+    var cratesFile: URL { root.appendingPathComponent(Self.cratesFileName) }
     var audio: URL { root.appendingPathComponent("Audio", isDirectory: true) }
     var mixes: URL { root.appendingPathComponent("Mixes", isDirectory: true) }
     var bounces: URL { root.appendingPathComponent("Bounces", isDirectory: true) }

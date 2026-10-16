@@ -178,6 +178,7 @@ final class Library {
     init(workspace: Workspace) {
         self.workspace = workspace
         load()
+        loadCrates()
         for track in tracks where needsWork(track) { queue.append(track.id) }
         pump()
         measureMissingLoudness()
@@ -891,6 +892,62 @@ final class Library {
         return added
     }
 
+    /// The library track a file is in, imported from there or lying in the
+    /// working directory itself - the same test `importItems` skips by.
+    func trackID(forSource url: URL) -> UUID? {
+        let path = url.standardizedFileURL.path
+        return tracks.first {
+            $0.sourcePath == path || workspace.url(forStoredPath: $0.path).standardizedFileURL.path == path
+        }?.id
+    }
+
+    /// Imports the files and answers, for each, the track it is now - new,
+    /// or in the library already. Nil for a file that is not a song.
+    func importResolving(_ urls: [URL]) -> [UUID?] {
+        importItems(urls)
+        return urls.map(trackID(forSource:))
+    }
+
+    // MARK: - Crates
+
+    /// Saved as soon as it changes; see Crates.
+    private(set) var crates = Crates()
+
+    /// Changes the crates and saves them, when anything changed.
+    @discardableResult
+    func editCrates<Result>(_ change: (inout Crates) -> Result) -> Result {
+        var edited = crates
+        let result = change(&edited)
+        if edited != crates {
+            crates = edited
+            saveCrates()
+        }
+        return result
+    }
+
+    /// Like the library file: one that cannot be read is set aside, never
+    /// overwritten by an empty set of crates.
+    private func loadCrates() {
+        let url = workspace.cratesFile
+        guard let data = try? Data(contentsOf: url) else { return }
+        do {
+            crates = try Crates(data: data)
+        } catch {
+            let aside = workspace.root.appendingPathComponent("Ultramix Crates (unreadable \(Int(Date().timeIntervalSince1970))).json")
+            try? FileManager.default.moveItem(at: url, to: aside)
+            lastError = "The crates could not be read and were set aside as “\(aside.lastPathComponent)”: \(error.localizedDescription)"
+        }
+    }
+
+    private func saveCrates() {
+        do {
+            let data = try crates.data()
+            try SafeWrite.replace(workspace.cratesFile) { try data.write(to: $0) }
+        } catch {
+            lastError = "The crates could not be saved: \(error.localizedDescription)"
+        }
+    }
+
     /// Puts a track referenced by a mix back into the library, keeping its
     /// id so the mix's clips find it. A relative path is looked for in this
     /// working directory; if the song is not there, the track shows as failed.
@@ -918,6 +975,7 @@ final class Library {
     func remove(_ ids: Set<UUID>) {
         let removed = tracks.filter { ids.contains($0.id) }
         tracks.removeAll { ids.contains($0.id) }
+        editCrates { $0.forget(ids) }
         let shifts = shiftedFiles()
         for track in removed {
             cancelSeparation(track.id)
