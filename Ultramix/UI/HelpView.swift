@@ -157,6 +157,7 @@ struct HelpView: View {
             HelpText("Open **Apple Music** in the list of sources above the table to see the Music app's songs, folders and playlists; Ultramix asks once for access to your music. A song comes into a mix the way any file does: it is imported first - copied or read where it lies, as Settings › Library says - and analysed. Until then the BPM column shows Music's own figure, in grey.")
             HelpKeys([
                 ("Double-click  /  Return", "A song already in the library (✓) goes into the mix the way the Return menu at the bottom of the library says; any other is imported."),
+                ("Play (bottom)", "Preview the selected song, in the library or not: one not imported yet is read straight from its file in the Music library, without importing it. While a preview plays, ↑ ↓ audition each song as you reach it."),
                 ("Drag onto Ultramix Library", "Import the dragged songs."),
                 ("Drag onto a lane", "The song goes into the mix there. One not yet in the library is imported first and appears once its analysis is done; the status line under the timeline counts the songs on their way."),
                 ("Right-click a song", "Add to Library, Show in Finder."),

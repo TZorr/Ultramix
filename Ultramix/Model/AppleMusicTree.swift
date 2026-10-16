@@ -26,9 +26,14 @@ nonisolated struct AppleMusicSong: Identifiable, Sendable, Hashable {
     /// The tempo set in Music; nil where none was.
     let bpm: Int?
     let seconds: Double
-    let url: URL?
-    /// Why it cannot be imported; nil when it can.
-    let block: Block?
+    var url: URL?
+    /// Why it cannot be imported; nil when it can - or when its file has
+    /// not been looked at yet (see `located`).
+    var block: Block?
+    /// Whether its file has been looked at. Music hands out a song's place
+    /// on disk one round trip at a time, so the list comes first and the
+    /// files after (AppleMusicSource).
+    var located = true
 
     enum Block: Sendable, Hashable {
         case protected, cloudOnly, notAudio, missing
@@ -54,6 +59,21 @@ nonisolated struct AppleMusicSong: Identifiable, Sendable, Hashable {
     /// The path the library keeps as a track's source, so a song already
     /// imported is recognised.
     var path: String? { url?.standardizedFileURL.path }
+
+    /// What its audition plays under (see FilePreview): the same for the
+    /// song every time, and never a track's - "applemus" and the id.
+    var previewID: UUID {
+        withUnsafeBytes(of: id.bigEndian) { b in
+            UUID(uuid: (0x61, 0x70, 0x70, 0x6C, 0x65, 0x6D, 0x75, 0x73, b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]))
+        }
+    }
+
+    /// What can be told without the file: protected, or not a file at all.
+    /// Nil leaves the file still to be looked at.
+    static func earlyBlock(protected: Bool, cloud: Bool, isFile: Bool) -> Block? {
+        if protected { return .protected }
+        return isFile ? nil : cloud ? .cloudOnly : .missing
+    }
 
     /// Protection first: a protected song may be on disk and still be of no
     /// use. Then the file itself - where it is, what it is, whether it is.

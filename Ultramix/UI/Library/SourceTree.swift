@@ -40,7 +40,7 @@ enum LibrarySource: Hashable {
 /// Music are imported then, and not when the dialog is merely cancelled.
 struct CrateNaming: Identifiable {
     enum Kind {
-        case new(folder: Bool, parent: UUID?, tracks: () -> [UUID])
+        case new(folder: Bool, parent: UUID?, tracks: () async -> [UUID])
         case rename(UUID)
     }
 
@@ -183,9 +183,36 @@ struct SourceTree: View {
     private var appleContent: some View {
         switch music.state {
         case .idle, .loading:
-            HStack(spacing: 6) {
-                ProgressView().controlSize(.small)
-                Text("Reading the Music library…").foregroundStyle(.secondary)
+            // The seconds count, and after a while say why it may take so
+            // long: a read that only says "Reading…" looks hung.
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                let seconds = music.loadingSince.map { Int(context.date.timeIntervalSince($0)) } ?? 0
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.small)
+                        Text(seconds >= 3 ? "Reading the Music library… \(seconds) s" : "Reading the Music library…")
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                    }
+                    if seconds >= 10 {
+                        Text("The Music app may be busy with its library - updating or syncing it. Ultramix waits for it.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+        case .denied:
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Ultramix may not read the Music library. Allow it in System Settings › Privacy & Security › Media & Apple Music, then try again.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack {
+                    Button("Open System Settings") { music.openPrivacySettings() }
+                    Button("Try Again") { music.reload() }
+                }
+                .controlSize(.small)
             }
         case .failed(let message):
             VStack(alignment: .leading, spacing: 4) {
@@ -203,6 +230,13 @@ struct SourceTree: View {
                 .contextMenu {
                     Button("Reload") { music.reload() }
                 }
+            if music.unlocated > 0 {
+                Text("Finding song files… \(music.unlocated) left")
+                    .font(.caption)
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+                    .help("Music tells where each song lies one song at a time, slowly while it is busy. The list shown goes first; ✓ appears as songs are matched with the library.")
+            }
             OutlineGroup(music.playlists, children: \.children) { playlist in
                 Label(playlist.name, systemImage: playlist.symbol)
                     .tag(LibrarySource.applePlaylist(playlist.id))

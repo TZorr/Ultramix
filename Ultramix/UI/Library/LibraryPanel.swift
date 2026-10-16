@@ -154,9 +154,11 @@ struct LibraryPanel: View {
     /// Imports the songs that can come in, in the order given; the rest are
     /// left out quietly - the list already says why.
     private func importSongs(_ ids: [UInt64]) {
-        let urls = ids.compactMap { music.songs[$0] }.filter { $0.block == nil }.compactMap(\.url)
-        guard !urls.isEmpty else { return }
-        library.importItems(urls)
+        Task {
+            let urls = await music.locate(ids).filter { $0.block == nil }.compactMap(\.url)
+            guard !urls.isEmpty else { return }
+            library.importItems(urls)
+        }
     }
 
     /// Double-click and Return in the Apple Music list: songs in the library
@@ -170,6 +172,28 @@ struct LibraryPanel: View {
         if !tracks.isEmpty { session.add(tracks, mode: session.libraryAddMode) }
     }
 
+    /// A song from Apple Music: through its track once it is in the library,
+    /// from its file before; one that cannot be read stops the preview.
+    private func audition(_ row: AppleMusicRow) {
+        if let track = row.track {
+            session.audition(track.id)
+        } else if row.song.block == nil {
+            Task {
+                // Its file may still be unknown; a moment's look, then play
+                // - unless the selection moved on meanwhile.
+                guard let song = await music.locate([row.id]).first,
+                      appleSelection == [row.id] else { return }
+                if let url = song.url, song.block == nil {
+                    session.auditionFile(url, id: song.previewID)
+                } else {
+                    session.preview.stop()
+                }
+            }
+        } else {
+            session.preview.stop()
+        }
+    }
+
     /// A dragged song brings the rest of the selection along when it is part
     /// of it, as a drag out of a list does everywhere else.
     private func dropped(_ id: UInt64) -> [UInt64] {
@@ -179,8 +203,8 @@ struct LibraryPanel: View {
 
     /// The library tracks for songs from Apple Music, importing those not
     /// in the library yet; songs that cannot come in are left out.
-    private func tracksForSongs(_ ids: [UInt64]) -> [UUID] {
-        let urls = ids.compactMap { music.songs[$0] }.filter { $0.block == nil }.compactMap(\.url)
+    private func tracksForSongs(_ ids: [UInt64]) async -> [UUID] {
+        let urls = await music.locate(ids).filter { $0.block == nil }.compactMap(\.url)
         guard !urls.isEmpty else { return [] }
         return library.importResolving(urls).compactMap { $0 }
     }
@@ -188,16 +212,18 @@ struct LibraryPanel: View {
     /// A playlist from Music as a crate, a folder as a folder of crates,
     /// its songs imported where they are not in the library yet.
     private func importAsCrates(_ playlist: AppleMusicPlaylist) {
-        let pairs = playlist.songs.compactMap { id -> (UInt64, URL)? in
-            guard let song = music.songs[id], song.block == nil, let url = song.url else { return nil }
-            return (id, url)
+        Task {
+            let pairs = await music.locate(playlist.songs).compactMap { song -> (UInt64, URL)? in
+                guard song.block == nil, let url = song.url else { return nil }
+                return (song.id, url)
+            }
+            var tracks: [UInt64: UUID] = [:]
+            for (pair, track) in zip(pairs, library.importResolving(pairs.map(\.1))) {
+                if let track { tracks[pair.0] = track }
+            }
+            library.editCrates { $0.importPlaylist(playlist, into: nil) { tracks[$0] } }
+            cratesExpanded = true
         }
-        var tracks: [UInt64: UUID] = [:]
-        for (pair, track) in zip(pairs, library.importResolving(pairs.map(\.1))) {
-            if let track { tracks[pair.0] = track }
-        }
-        library.editCrates { $0.importPlaylist(playlist, into: nil) { tracks[$0] } }
-        cratesExpanded = true
     }
 
     /// A dragged track brings the rest of the selection along when it is
@@ -207,18 +233,19 @@ struct LibraryPanel: View {
         return ordered(library.selection)
     }
 
-    /// Tracks or Apple Music songs dropped on a crate.
+    /// Tracks or Apple Music songs dropped on a crate; songs go in once
+    /// their files are known and they are imported.
     private func addDropped(_ items: [String], to crate: UUID) -> Bool {
-        var ids: [UUID] = []
-        for item in items {
-            if let id = UUID(uuidString: item) {
-                ids += draggedTracks(id)
-            } else if let song = AppleMusicDrag.id(item) {
-                ids += tracksForSongs(dropped(song))
+        let tracks = items.compactMap(UUID.init(uuidString:)).flatMap(draggedTracks)
+        let songs = items.compactMap(AppleMusicDrag.id).flatMap(dropped)
+        guard !tracks.isEmpty || !songs.isEmpty else { return false }
+        if !tracks.isEmpty { library.editCrates { $0.add(tracks, to: crate) } }
+        if !songs.isEmpty {
+            Task {
+                let imported = await tracksForSongs(songs)
+                library.editCrates { $0.add(imported, to: crate) }
             }
         }
-        guard !ids.isEmpty else { return false }
-        library.editCrates { $0.add(ids, to: crate) }
         return true
     }
 
@@ -228,7 +255,7 @@ struct LibraryPanel: View {
     }
 
     /// A new crate at the top, of the tracks given once it is named.
-    private func newCrate(_ tracks: @escaping () -> [UUID]) {
+    private func newCrate(_ tracks: @escaping () async -> [UUID]) {
         startNaming(CrateNaming(kind: .new(folder: false, parent: nil, tracks: tracks), title: "New Crate",
                                 initialName: library.crates.freeName("New Crate", in: nil)))
     }
@@ -238,10 +265,17 @@ struct LibraryPanel: View {
         naming = nil
         switch request.kind {
         case .new(let folder, let parent, let tracks):
-            let ids = tracks()
+            // The crate at once; its tracks as they are found - songs from
+            // Apple Music are imported first.
             let name = nameDraft
-            library.editCrates { $0.add(name: name, folder: folder, in: parent, tracks: ids) }
+            let crate = library.editCrates { $0.add(name: name, folder: folder, in: parent) }
             cratesExpanded = true
+            if !folder {
+                Task {
+                    let ids = await tracks()
+                    library.editCrates { $0.add(ids, to: crate) }
+                }
+            }
         case .rename(let id):
             let name = nameDraft
             library.editCrates { $0.rename(id, to: name) }
@@ -453,14 +487,18 @@ struct LibraryPanel: View {
                 AppleMusicTable(rows: appleVisible, selection: $appleSelection, sortOrder: $appleSort,
                                 library: library, importSongs: importSongs, activate: activateSongs,
                                 addToCrate: { songs, crate in
-                                    let ids = tracksForSongs(songs)
-                                    library.editCrates { $0.add(ids, to: crate) }
+                                    Task {
+                                        let ids = await tracksForSongs(songs)
+                                        library.editCrates { $0.add(ids, to: crate) }
+                                    }
                                 },
-                                newCrate: { songs in newCrate { tracksForSongs(songs) } })
+                                newCrate: { songs in newCrate { await tracksForSongs(songs) } })
                     .simultaneousGesture(TapGesture().onEnded { listFocused = true })
                     // A fresh table for every list and search, for the same
                     // reason as the library's below.
                     .id(AppleTableIdentity(source: source, search: search, bpm: bpmFilter))
+                    // Its files are looked up before the rest of the library's.
+                    .onChange(of: appleVisible.map(\.id), initial: true) { _, ids in music.prioritize(ids) }
                     .overlay {
                         if music.state == .loaded, appleVisible.isEmpty {
                             ContentUnavailableView(search.isEmpty && !bpmFilter.isOn ? "No Songs" : "No Matching Songs",
@@ -469,8 +507,14 @@ struct LibraryPanel: View {
                     }
             }
             Divider()
+            // In Apple Music the one song selected: through its track once it
+            // is in the library, from its file before.
+            let appleOne = source.isAppleMusic && appleSelection.count == 1
+                ? appleVisible.first { appleSelection.contains($0.id) } : nil
             PreviewBar(session: session, library: library,
-                       trackID: library.selection.count == 1 ? library.selection.first : nil)
+                       trackID: source.isAppleMusic ? appleOne?.track?.id
+                           : library.selection.count == 1 ? library.selection.first : nil,
+                       song: appleOne?.track == nil ? appleOne?.song : nil)
             if session.isLive {
                 Divider()
                 LiveAutoBar(session: session, library: library, order: visible.map(\.id),
@@ -545,6 +589,18 @@ struct LibraryPanel: View {
             guard listFocused, !typing else { return .ignored }
             session.togglePlay()
             return .handled
+        }
+        // The same in Apple Music, while a preview plays.
+        .onChange(of: appleSelection) { _, ids in
+            if NSApp.currentEvent?.type == .leftMouseDown || NSApp.currentEvent?.type == .leftMouseUp {
+                listFocused = true
+            }
+            guard session.isAuditioning else { return }
+            if ids.count == 1, let id = ids.first, let row = appleRows.first(where: { $0.id == id }) {
+                audition(row)
+            } else {
+                session.preview.stop()
+            }
         }
         // Auditioning follows the selection: flipping through the list with
         // the arrow keys plays each track as it is reached. Whatever moved
@@ -835,6 +891,8 @@ struct PreviewBar: View {
     let session: MixSession
     let library: Library
     let trackID: UUID?
+    /// A song from Apple Music not in the library: auditioned from its file.
+    var song: AppleMusicSong? = nil
     @AppStorage(PreviewPlayer.volumeKey) private var volumeDB = 0.0
 
     var body: some View {
@@ -868,6 +926,8 @@ struct PreviewBar: View {
                         }
                     }
                 }
+            } else if let song {
+                songRow(song)
             } else {
                 Text("Select a track to preview it.")
                     .foregroundStyle(.secondary)
@@ -890,6 +950,50 @@ struct PreviewBar: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .onChange(of: volumeDB, initial: true) { session.preview.volumeDB = PreviewPlayer.storedVolumeDB() }
+    }
+
+    /// Like a track's row, for a song read straight from its file: a spinner
+    /// while it is decoded, and the reason when it cannot be.
+    private func songRow(_ song: AppleMusicSong) -> some View {
+        TimelineView(.periodic(from: .now, by: 0.1)) { _ in
+            let preview = session.preview
+            let id = song.previewID
+            let playing = preview.isPlaying && preview.trackID == id
+            let loading = session.pendingAudition == id
+            let duration = max(song.seconds, 0.001)
+            HStack(spacing: 10) {
+                Button {
+                    if playing {
+                        preview.stop()
+                    } else {
+                        let from = preview.trackID == id && preview.positionSeconds < duration ? preview.positionSeconds : 0
+                        Task {
+                            // Its file may not be known yet: looked up first.
+                            guard let located = await AppleMusicSource.shared.locate([song.id]).first,
+                                  located.block == nil, let url = located.url else { return }
+                            session.auditionFile(url, id: id, fromSeconds: from)
+                        }
+                    }
+                } label: {
+                    if loading {
+                        ProgressView().controlSize(.mini).frame(width: 16)
+                    } else {
+                        Image(systemName: playing ? "stop.fill" : "play.fill").frame(width: 16)
+                    }
+                }
+                .buttonStyle(.borderless)
+                .disabled(song.block != nil || loading)
+                .help(song.block?.reason ?? (playing ? "Stop the preview" : "Preview the song from its file in the Music library"))
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(song.artist.map { "\($0) – \(song.title)" } ?? song.title).lineLimit(1).font(.callout)
+                    Slider(value: Binding(
+                        get: { preview.trackID == id ? min(preview.positionSeconds, duration) : 0 },
+                        set: { preview.seek(toSeconds: $0) }), in: 0...duration)
+                        .controlSize(.mini)
+                        .disabled(preview.trackID != id)
+                }
+            }
+        }
     }
 
     private func actions(compact: Bool, speaker: Bool = true) -> some View {

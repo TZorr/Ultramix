@@ -946,9 +946,14 @@ struct TimelinePanel: View {
             return true
         }
         guard let songID = AppleMusicDrag.id(text),
-              let song = AppleMusicSource.shared.songs[songID], song.block == nil,
-              let url = song.url else { return false }
-        return session.addFile(url, lane: lane, startBeat: beat)
+              let song = AppleMusicSource.shared.songs[songID], song.block == nil else { return false }
+        // Its file may not be known yet: looked up first, then imported.
+        Task {
+            guard let located = await AppleMusicSource.shared.locate([songID]).first,
+                  located.block == nil, let url = located.url else { return }
+            session.addFile(url, lane: lane, startBeat: beat)
+        }
+        return true
     }
 }
 

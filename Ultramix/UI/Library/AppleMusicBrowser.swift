@@ -119,8 +119,15 @@ struct AppleMusicTable: View {
                 newCrate(ordered(ids))
             }
             .disabled(!rows.contains { ids.contains($0.id) && $0.song.block == nil })
-            if ids.count == 1, let url = rows.first(where: { ids.contains($0.id) })?.song.url {
-                Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([url]) }
+            if ids.count == 1, let row = rows.first(where: { ids.contains($0.id) }),
+               row.song.block == nil || row.song.url != nil {
+                Button("Show in Finder") {
+                    Task {
+                        if let url = await AppleMusicSource.shared.locate([row.id]).first?.url {
+                            NSWorkspace.shared.activateFileViewerSelecting([url])
+                        }
+                    }
+                }
             }
         } primaryAction: { ids in
             activate(ordered(ids))

@@ -5814,6 +5814,15 @@ section("apple music: a folder inside itself does not loop") {
     check(tree.map(\.name) == ["Self"], "its own parent puts it at the top; a closed ring has no way in: \(tree.map(\.name))")
 }
 
+section("apple music: a song's preview id is its own and stays") {
+    func song(_ id: UInt64) -> AppleMusicSong {
+        AppleMusicSong(id: id, title: "", artist: nil, album: nil, bpm: nil, seconds: 0, url: nil, block: nil)
+    }
+    check(song(42).previewID == song(42).previewID, "the same song, the same id")
+    check(song(42).previewID != song(43).previewID && song(0).previewID != song(UInt64.max).previewID, "another song, another id")
+    check(song(0x0102_0304_0506_0708).previewID.uuidString.replacingOccurrences(of: "-", with: "").hasSuffix("0102030405060708"), "the id is in it")
+}
+
 section("apple music: which songs can come in") {
     let file = URL(fileURLWithPath: "/Music/song.m4a")
     let there: (URL) -> Bool = { _ in true }
@@ -5828,6 +5837,10 @@ section("apple music: which songs can come in") {
     check(AppleMusicSong.block(protected: false, cloud: true, url: file, exists: gone) == .missing, "a file that is gone")
     check(AppleMusicSong.block(protected: false, cloud: false, url: URL(string: "https://example.com/a.mp3"), exists: there) == .missing,
           "only a file URL counts")
+    check(AppleMusicSong.earlyBlock(protected: true, cloud: false, isFile: true) == .protected, "protected, file or not")
+    check(AppleMusicSong.earlyBlock(protected: false, cloud: true, isFile: false) == .cloudOnly, "no file, in the cloud")
+    check(AppleMusicSong.earlyBlock(protected: false, cloud: false, isFile: false) == .missing, "no file, nowhere")
+    check(AppleMusicSong.earlyBlock(protected: false, cloud: true, isFile: true) == nil, "a file: still to be looked at")
 }
 
 // MARK: - Crates

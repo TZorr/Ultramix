@@ -866,6 +866,8 @@ final class MixSession {
         defaultsObserver = nil
         engine.shutdown()
         preview.shutdown()
+        filePreviews = []
+        FilePreview.keepOnly(partner?.filePreviews.map(\.id) ?? [])
         plan = nil
     }
 
@@ -951,12 +953,59 @@ final class MixSession {
             return
         }
         pendingAudition = nil
-        if !cue {
+        startPreview(audio, id: trackID, fromSeconds: seconds)
+    }
+
+    /// The tail of every audition: the mix pauses unless auditioning has an
+    /// output of its own, and only one preview plays.
+    private func startPreview(_ audio: AudioFrames, id: UUID, fromSeconds seconds: Double) {
+        if !AudioDevices.shared.isSplit {
             engine.pause()
             partner?.engine.pause()
         }
         partner?.preview.stop()
-        preview.play(audio, track: trackID, fromSeconds: seconds)
+        preview.play(audio, track: id, fromSeconds: seconds)
+    }
+
+    /// Songs auditioned from a file outside the library - Apple Music's -
+    /// by their preview id: the last few, so stepping back and forth through
+    /// a playlist does not decode the same song twice.
+    @ObservationIgnored private var filePreviews: [(id: UUID, audio: AudioFrames)] = []
+
+    /// Auditions a song that is not in the library, straight from its file:
+    /// decoded into a temporary file of its own (FilePreview), never into
+    /// the library or its cache. Silence for the moment the decode takes;
+    /// only the latest request plays.
+    func auditionFile(_ url: URL, id: UUID, fromSeconds seconds: Double = 0) {
+        let cue = AudioDevices.shared.isSplit
+        guard cue || !livePlaying else {
+            preview.stop()
+            pendingAudition = nil
+            message = "The live set is playing - an audition would be heard in it."
+            return
+        }
+        if let held = filePreviews.first(where: { $0.id == id }) {
+            pendingAudition = nil
+            startPreview(held.audio, id: id, fromSeconds: seconds)
+            return
+        }
+        preview.stop()
+        pendingAudition = id
+        Task.detached(priority: .userInitiated) {
+            let decoded = Result { try FilePreview.decode(url, id: id) }
+            await MainActor.run { [weak self] in
+                guard let self, self.pendingAudition == id else { return }
+                self.pendingAudition = nil
+                switch decoded {
+                case .success(let audio):
+                    self.filePreviews = Array((self.filePreviews.filter { $0.id != id } + [(id, audio)]).suffix(3))
+                    FilePreview.keepOnly(self.filePreviews.map(\.id) + (self.partner?.filePreviews.map(\.id) ?? []))
+                    self.startPreview(audio, id: id, fromSeconds: seconds)
+                case .failure:
+                    self.message = "“\(url.deletingPathExtension().lastPathComponent)” could not be read."
+                }
+            }
+        }
     }
 
     /// Where the playhead is, in beats - read from the engine's own frame
