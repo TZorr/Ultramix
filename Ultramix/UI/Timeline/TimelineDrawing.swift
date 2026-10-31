@@ -457,7 +457,7 @@ enum TimelineDrawing {
         var inner = context
         inner.clip(to: shape)
         if clip.muted { inner.opacity = 0.35 }
-        inner.fill(shape, with: .color(color.opacity(0.16)))
+        inner.fill(shape, with: .color(color.opacity(0.5)))
         // The clip's own row: the whole clip, or its top row when expanded.
         let own = layout.rowRect(clip.lane, part: nil)
         let top = rect.minY, bottom = clip.expanded ? own.maxY : rect.maxY
