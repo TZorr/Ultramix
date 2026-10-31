@@ -6,7 +6,7 @@ A native macOS DJ mix editor: build a complete mix on a beat-based timeline
 before the party, hear every transition while you shape it, and bounce the
 finished set to WAV or MP3.
 
-![Ultramix 1.6: the library sidebar with the source tree on top - crates Italo-Disco and Retromix under Ultramix Library, then Apple Music with its songs and playlists - and the Italo-Disco crate sorted by BPM below it; on the timeline a beatmix between two lanes, lane 2 expanded into drums, bass, vocals and other, the beatmix in the inspector on the right, and the beatgrid drawer below with the grid fit bar](screenshot.png)
+![Ultramix 1.6.2: the library sidebar with Apple Music folded away under Ultramix Library and four tracks listed by BPM; on the timeline two clips filled in their lane colour - lane 1 in blue, expanded into rows for drums, bass, vocals and other, waiting to be separated, and lane 2 in yellow below - with the tempo curve rising above them; the Settings window open over the timeline at Appearance, Beat Detection and Loudness; the clip inspector on the right; and the beatgrid drawer below, its grid fit bar turning red where the kicks drift from the grid](screenshot.png)
 
 Swift, SwiftUI and AVFoundation, Apple Silicon only.
 
