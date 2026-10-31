@@ -83,13 +83,15 @@ struct LibraryPanel: View {
     /// Whether Apple Music is open in the tree, and so read. Kept: someone
     /// who works from their playlists wants them there next time.
     @AppStorage("appleMusicExpanded") private var appleExpanded = false
+    @AppStorage(AppleMusicVisibility.storageKey) private var showAppleMusic = true
     @AppStorage("sourceTreeHeight") private var treeHeight = 220.0
     @State private var appleSelection: Set<UInt64> = []
     /// Empty: in the playlist's own order, as Music shows it.
     @State private var appleSort: [KeyPathComparator<AppleMusicRow>] = []
     private var music = AppleMusicSource.shared
-    /// The tree with everything closed: its two rows and no more.
-    private static let collapsedTreeHeight = 64.0
+    /// The tree with everything closed: its two rows and no more - one, with
+    /// Apple Music hidden.
+    private var collapsedTreeHeight: Double { showAppleMusic ? 64 : 36 }
     @AppStorage("cratesExpanded") private var cratesExpanded = true
     /// A crate's own sort, apart from the library's: it starts in the
     /// crate's order every time a crate is chosen.
@@ -348,13 +350,13 @@ struct LibraryPanel: View {
                 .padding(.horizontal, 12)
                 .padding(.bottom, 8)
             Divider()
-            let treeOpen = appleExpanded || (cratesExpanded && !library.crates.items.isEmpty)
+            let treeOpen = (appleExpanded && showAppleMusic) || (cratesExpanded && !library.crates.items.isEmpty)
             SourceTree(source: $source, appleExpanded: $appleExpanded, cratesExpanded: $cratesExpanded,
                        library: library,
                        actions: SourceTreeActions(importSongs: importSongs, importAsCrates: importAsCrates,
                                                   draggedSongs: dropped, addDropped: addDropped,
                                                   name: startNaming, delete: requestDelete))
-                .frame(height: treeOpen ? treeHeight : Self.collapsedTreeHeight)
+                .frame(height: treeOpen ? treeHeight : collapsedTreeHeight)
             if treeOpen {
                 SourceTreeResizeHandle(height: $treeHeight)
             } else {
@@ -531,7 +533,7 @@ struct LibraryPanel: View {
         }
         // Closing Apple Music in the tree goes back to the library rather
         // than leaving a list on screen whose entry can no longer be seen.
-        .onChange(of: appleExpanded) { _, open in
+        .onChange(of: appleExpanded && showAppleMusic) { _, open in
             if !open, source.isAppleMusic { source = .library }
         }
         .onChange(of: source) { _, now in

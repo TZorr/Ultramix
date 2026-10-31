@@ -43,7 +43,8 @@ unless you ask it to.
   one or a whole playlist at a time, and then analysed. Only songs with a
   file of their own can come in: a song from an Apple Music subscription is
   protected (DRM), and one only in the cloud has no file yet; both are
-  listed, dimmed, with the reason.
+  listed, dimmed, with the reason. Not using Music? Settings › Library
+  hides it from the sidebar.
 - **Crates** — your own lists of library tracks, in folders, in the tree
   above the library. Drag tracks onto a crate, or right-click › Add to
   Crate; a playlist from Music comes in as a crate (a folder of them as a
@@ -244,7 +245,8 @@ is built without the network entitlement, so it *cannot* open an outgoing
 connection even if it tried. Its entitlements are the sandbox itself,
 read-write access to the files and folders you pick, and read-only access to
 your music folder — nothing else. The Music library itself is read only
-when you open Apple Music in the sidebar, and macOS asks you first.
+when you open Apple Music in the sidebar, and macOS asks you first; hidden
+in Settings › Library, it is never read at all.
 
 App settings live in the normal macOS preferences for the app; the library,
 your mixes and the cache live in the working directory you chose. Song files

@@ -29,6 +29,7 @@ struct SettingsView: View {
     @AppStorage(BeatAlgorithm.storageKey) private var beatAlgorithm: BeatAlgorithm = BeatAlgorithm.fallback
     @AppStorage(AudioCacheLimit.storageKey) private var cacheLimitGB = AudioCacheLimit.defaultGB
     @AppStorage(ImportCopy.storageKey) private var copyOnImport = true
+    @AppStorage(AppleMusicVisibility.storageKey) private var showAppleMusic = true
     @AppStorage(AudioCacheLimit.noLimitKey) private var keepDecoded = false
     @AppStorage(AudioRouting.deviceKey) private var outputDeviceUID = ""
     @AppStorage(AudioRouting.deviceNameKey) private var outputDeviceName = ""
@@ -169,6 +170,12 @@ struct SettingsView: View {
             Section("Library") {
                 Toggle("Copy imported songs into the working directory", isOn: $copyOnImport)
                 Text("Off: songs are read where they lie and must stay there.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Toggle("Show Apple Music in the library sidebar", isOn: $showAppleMusic)
+                Text("Off: the Music app's songs and playlists are not listed or read. Crates imported from them stay.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

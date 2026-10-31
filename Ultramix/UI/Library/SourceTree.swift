@@ -16,6 +16,12 @@
 import SwiftUI
 import AppKit
 
+/// Whether Apple Music is listed in the tree at all (Settings › Library).
+/// Hidden, it is never read, and the Music library is never asked for.
+nonisolated enum AppleMusicVisibility {
+    static let storageKey = "showAppleMusic"
+}
+
 /// What the sidebar's table lists.
 enum LibrarySource: Hashable {
     case library
@@ -74,6 +80,7 @@ struct SourceTree: View {
     let library: Library
     let actions: SourceTreeActions
     private var music = AppleMusicSource.shared
+    @AppStorage(AppleMusicVisibility.storageKey) private var showAppleMusic = true
 
     init(source: Binding<LibrarySource>, appleExpanded: Binding<Bool>, cratesExpanded: Binding<Bool>,
          library: Library, actions: SourceTreeActions) {
@@ -98,18 +105,20 @@ struct SourceTree: View {
                     libraryLabel
                 }
             }
-            DisclosureGroup(isExpanded: $appleExpanded) {
-                appleContent
-            } label: {
-                Label("Apple Music", systemImage: "music.note")
-                    .contextMenu {
-                        Button("Reload") { music.reload() }
-                            .disabled(music.state == .loading || music.state == .idle)
-                    }
+            if showAppleMusic {
+                DisclosureGroup(isExpanded: $appleExpanded) {
+                    appleContent
+                } label: {
+                    Label("Apple Music", systemImage: "music.note")
+                        .contextMenu {
+                            Button("Reload") { music.reload() }
+                                .disabled(music.state == .loading || music.state == .idle)
+                        }
+                }
             }
         }
         .listStyle(.sidebar)
-        .onChange(of: appleExpanded, initial: true) { _, open in
+        .onChange(of: appleExpanded && showAppleMusic, initial: true) { _, open in
             if open { music.loadIfNeeded() }
         }
     }
