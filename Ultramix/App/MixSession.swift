@@ -108,6 +108,8 @@ final class MixSession {
         // Every change reaches the rows at once, whichever way it came: an
         // edit, undo, or a clip let go of.
         didSet {
+            let tracks = Set(document.clips.map(\.trackID))
+            if tracks != usedTracks { usedTracks = tracks }
             if isLive { liveOrder = LiveSet.compacted(liveOrder, before: oldValue, after: document) }
             if document.lanes.count != oldValue.lanes.count { fitLaneOrder() }
             if let mark = selectedMark, !document.hasMark(mark) { selectedMark = nil }
@@ -257,7 +259,8 @@ final class MixSession {
 
     var endBeat: Double { document.endBeat(grids) }
 
-    var usedTracks: Set<UUID> { Set(document.clips.map(\.trackID)) }
+    /// Keep library rows independent of edits that do not change track usage.
+    private(set) var usedTracks: Set<UUID> = []
 
     /// - Parameter quiet: a refused change says nothing. A drag that runs
     ///   into a neighbouring clip simply stops there; a message box on every

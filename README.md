@@ -268,11 +268,19 @@ Requirements: macOS 26.5, Xcode 26.
 ./build_dmg.sh                # Release build → /Applications → .dmg
 ./build_dmg.sh --no-install   # build and package only
 Verification/run.sh           # the verification harness (-O for Release)
+bash Verification/run-ui.sh    # offscreen UI checks and responsiveness benchmark
 ```
 
 There is no test target. `Verification/main.swift` is compiled with the
 model, analysis, engine and export sources and checks them against values
 worked out by hand.
+
+`Verification/run-ui.sh` builds a separate Debug copy and measures selection,
+mute, gain, key and Mix/Live updates using a synthetic library and an offscreen
+window. It checks document preservation, track membership through undo/redo,
+library observation and layout at three viewport widths. It does not validate
+control visibility or operate the running app or the user's music workspace.
+Use `TRACKS=1 bash Verification/run-ui.sh` for a one-track fixture (default: 1,000).
 
 The build is signed ad-hoc, without a developer account, so a `.dmg` passed
 to another Mac is quarantined by Gatekeeper. Open it once with right-click ›
