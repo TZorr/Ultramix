@@ -24,10 +24,7 @@ struct TimelineBar: View {
     /// and inspector both open - "Move" goes, Follow Playhead becomes its
     /// symbol and the zoom slider shorter, rather than every label being cut.
     var body: some View {
-        ViewThatFits(in: .horizontal) {
-            row(compact: false)
-            row(compact: true)
-        }
+        row
         .controlSize(.small)
         .padding(.horizontal, 12)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -35,8 +32,8 @@ struct TimelineBar: View {
         .barSurface()
     }
 
-    private func row(compact: Bool) -> some View {
-        HStack(spacing: compact ? 8 : 12) {
+    private var row: some View {
+        HStack(spacing: 8) {
             Picker("Edit", selection: $tool) {
                 ForEach(TimelineTool.allCases) { Text($0.title).tag($0) }
             }
@@ -69,9 +66,11 @@ struct TimelineBar: View {
             // For every clip, so it shows whatever is selected. "Move" and
             // not "Snap": Off does not let a clip be dragged at all.
             HStack(spacing: 6) {
-                if !compact {
+                ViewThatFits(in: .horizontal) {
                     Text("Move").foregroundStyle(.secondary).fixedSize()
+                    Color.clear.frame(width: 0, height: 0)
                 }
+                .layoutPriority(-1)
                 Picker("Move", selection: Binding(get: { session.moveMode }, set: { session.moveMode = $0 })) {
                     ForEach(MoveMode.allCases) { Text($0.title).tag($0) }
                 }
@@ -83,10 +82,9 @@ struct TimelineBar: View {
             Spacer(minLength: 8)
 
             Toggle(isOn: $follow) {
-                if compact {
-                    Image(systemName: "arrow.right.to.line")
-                } else {
+                ViewThatFits(in: .horizontal) {
                     Text("Follow Playhead").fixedSize()
+                    Image(systemName: "arrow.right.to.line")
                 }
             }
             .toggleStyle(.button)
@@ -101,7 +99,7 @@ struct TimelineBar: View {
                 Slider(value: Binding(get: { log2(pixelsPerBeat) },
                                       set: { pixelsPerBeat = pow(2, $0) }),
                        in: log2(TimelineZoom.range.lowerBound)...log2(TimelineZoom.range.upperBound))
-                    .frame(width: compact ? 64 : 100)
+                    .frame(minWidth: 64, idealWidth: 100, maxWidth: 100)
                     .accessibilityLabel("Zoom")
                 Button { pixelsPerBeat = TimelineZoom.zoomed(pixelsPerBeat, by: 1.5) } label: {
                     Image(systemName: "plus")
