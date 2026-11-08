@@ -416,63 +416,70 @@ struct BeatgridEditor: View {
     /// of it, the legend goes first, then the word "Window" - never the
     /// controls themselves.
     private func waveToolbar(bpm: Double, first: Double, grid: SourceGrid) -> some View {
-        ViewThatFits(in: .horizontal) {
-            waveToolbarRow(bpm: bpm, first: first, grid: grid, legend: true, windowLabel: true)
-            waveToolbarRow(bpm: bpm, first: first, grid: grid, legend: false, windowLabel: true)
-            waveToolbarRow(bpm: bpm, first: first, grid: grid, legend: false, windowLabel: false)
-            waveToolbarRow(bpm: bpm, first: first, grid: grid, legend: false, windowLabel: false, compact: true)
-        }
+        waveToolbarRow(bpm: bpm, first: first, grid: grid)
         .controlSize(.small)
         .padding(.horizontal, 12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .frame(height: 34)
     }
 
-    /// `compact`: symbols instead of words, for the narrowest drawer; the
-    /// words stay in the help tags.
-    private func waveToolbarRow(bpm: Double, first: Double, grid: SourceGrid,
-                                legend showLegend: Bool, windowLabel: Bool, compact: Bool = false) -> some View {
-        HStack(spacing: compact ? 6 : 10) {
-            playButton(bpm: bpm, first: first, compact: compact)
+    /// Adapt labels and the legend without duplicating live controls.
+    private func waveToolbarRow(bpm: Double, first: Double, grid: SourceGrid) -> some View {
+        HStack(spacing: 6) {
+            playButton(bpm: bpm, first: first)
             Toggle(isOn: $cycle) {
                 Label("Cycle", systemImage: "repeat")
-                    .labelStyle(.adaptive(iconOnly: compact))
+                    .labelStyle(.adaptive)
             }
             .toggleStyle(.button)
+            .accessibilityLabel("Cycle")
             .disabled(region == nil)
             .help(region == nil ? "Mark a stretch to play it round and round"
                                 : "Play the marked stretch round and round · ← → move its start, ⌥← ⌥→ its end, ⇧ by a bar")
-            if compact {
+            ViewThatFits(in: .horizontal) {
+                Toggle("Metronome", isOn: Binding(get: { preview.clickEnabled }, set: { preview.clickEnabled = $0 }))
+                    .toggleStyle(.checkbox)
+                    .fixedSize()
                 Toggle(isOn: Binding(get: { preview.clickEnabled }, set: { preview.clickEnabled = $0 })) {
                     Image(systemName: "metronome")
                 }
                 .toggleStyle(.button)
-                .help("Metronome: click along with the preview")
-                .accessibilityLabel("Metronome")
-            } else {
-                Toggle("Metronome", isOn: Binding(get: { preview.clickEnabled }, set: { preview.clickEnabled = $0 }))
-                    .toggleStyle(.checkbox)
-                    .fixedSize()
             }
-            if showLegend {
-                Divider().frame(height: 14)
-                legend
+            .accessibilityLabel("Metronome")
+            .help("Metronome: click along with the preview")
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 6) {
+                    Divider().frame(height: 14)
+                    legend
+                }
+                .fixedSize()
+                Color.clear.frame(width: 0, height: 0)
             }
+            .layoutPriority(-1)
             Spacer(minLength: 8)
             HStack(spacing: 6) {
-                if windowLabel {
-                    Text("Window").foregroundStyle(.secondary)
+                ViewThatFits(in: .horizontal) {
+                    Text("Window").foregroundStyle(.secondary).fixedSize()
+                    Color.clear.frame(width: 0, height: 0)
                 }
-                Picker("Window", selection: $span) {
-                    ForEach(Self.spans, id: \.self) { Text(compact ? "\(Int($0))" : "±\(Int($0)) s").tag($0) }
+                .layoutPriority(-0.5)
+                ViewThatFits(in: .horizontal) {
+                    windowPicker(compact: false)
+                    windowPicker(compact: true)
                 }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .fixedSize()
             }
             .help("How much of the song the strip shows, either side of the middle, in seconds")
-            playheadButton(grid: grid, compact: compact)
+            playheadButton(grid: grid)
         }
+    }
+
+    private func windowPicker(compact: Bool) -> some View {
+        Picker("Window", selection: $span) {
+            ForEach(Self.spans, id: \.self) { Text(compact ? "\(Int($0))" : "±\(Int($0)) s").tag($0) }
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .fixedSize()
     }
 
     /// What the strip's marks mean, drawn as the strip draws them.
@@ -501,7 +508,7 @@ struct BeatgridEditor: View {
     /// otherwise this song is not playing at the playhead and there is
     /// nowhere to jump to. The marked stretch stays where it is; only the
     /// view and the selected line move.
-    private func playheadButton(grid: SourceGrid, compact: Bool = false) -> some View {
+    private func playheadButton(grid: SourceGrid) -> some View {
         TimelineView(.periodic(from: .now, by: 0.25)) { _ in
             let seconds = session.document.sourceSeconds(ofTrack: trackID, atBeat: session.playheadBeat(),
                                                          grids: session.grids)
@@ -511,12 +518,12 @@ struct BeatgridEditor: View {
                 selectedLine = BeatLines.nearestLine(to: seconds, bpm: grid.bpm, firstBeat: grid.firstBeatSeconds)
             } label: {
                 Label("Center Playhead", systemImage: "scope")
-                    .labelStyle(.adaptive(iconOnly: compact))
+                    .labelStyle(.adaptive)
             }
-            .fixedSize()
             .disabled(seconds == nil)
             .help(seconds == nil ? "The timeline's playhead is not over a clip of this song"
                                  : "Show the spot under the timeline's playhead")
+            .accessibilityLabel("Center Playhead")
         }
     }
 
@@ -785,18 +792,18 @@ struct BeatgridEditor: View {
         }
     }
 
-    private func playButton(bpm: Double, first: Double, compact: Bool = false) -> some View {
+    private func playButton(bpm: Double, first: Double) -> some View {
         TimelineView(.periodic(from: .now, by: 0.2)) { _ in
             let playing = preview.isPlaying && preview.trackID == trackID
             Button {
                 togglePreview(bpm: bpm, first: first)
             } label: {
                 Label(playing ? "Stop" : "Play", systemImage: playing ? "stop.fill" : "play.fill")
-                    .labelStyle(.adaptive(iconOnly: compact))
+                    .labelStyle(.adaptive)
             }
-            .fixedSize()
             .help(cycle ? "Play the marked stretch round and round (P) - the timeline stops"
                         : "Play from the selected gridline (P) - the timeline stops")
+            .accessibilityLabel(playing ? "Stop" : "Play")
         }
     }
 
@@ -869,21 +876,18 @@ struct GridFitBar: View {
 
 /// A label with its title, or - where there is no room - only its symbol.
 struct AdaptiveLabelStyle: LabelStyle {
-    let iconOnly: Bool
-
     func makeBody(configuration: Configuration) -> some View {
-        if iconOnly {
-            configuration.icon
-        } else {
+        ViewThatFits(in: .horizontal) {
             HStack(spacing: 4) {
                 configuration.icon
                 configuration.title
             }
             .fixedSize()
+            configuration.icon
         }
     }
 }
 
 extension LabelStyle where Self == AdaptiveLabelStyle {
-    static func adaptive(iconOnly: Bool) -> AdaptiveLabelStyle { AdaptiveLabelStyle(iconOnly: iconOnly) }
+    static var adaptive: AdaptiveLabelStyle { AdaptiveLabelStyle() }
 }
