@@ -172,17 +172,19 @@ nonisolated final class RenderPlan: @unchecked Sendable {
                 outOfRange.insert(clip.id)
             }
             var gain = Float(Automation.gain(dB: gainDB(clip)))
+            // Its stems with the lane's stem switches on top.
+            let played = document.playedParts(clip)
             // What the clip plays: the song (nil), or a mix of its stems, on
             // the lane (part nil) or on a stem's bus.
             var voices: [(stems: StemMix?, part: Stem?)] = [(nil, nil)]
-            if !clip.parts.isNeutral {
-                if !clip.parts.playsStems {
+            if !played.isNeutral {
+                if !played.playsStems {
                     // All alike is the clip louder or quieter: no stems.
-                    gain *= clip.parts.drums.gain
+                    gain *= played.drums.gain
                 } else if let parts = stemAudio(clip.trackID, pitch),
                           parts.all.allSatisfy({ $0.frameCount == frames.frameCount }) {
-                    let gains = Stem.allCases.map { clip.parts[$0].gain }
-                    let apart = Stem.allCases.filter { !clip.parts[$0].automation.isEmpty }
+                    let gains = Stem.allCases.map { played[$0].gain }
+                    let apart = Stem.allCases.filter { !played[$0].automation.isEmpty }
                     var rest = gains
                     for stem in apart { rest[stem.rawValue] = 0 }
                     voices = rest.contains { $0 != 0 } ? [(StemMix(parts, gains: rest), nil)] : []

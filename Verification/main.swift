@@ -5752,6 +5752,86 @@ section("stems: a stem's own automation plays on its own bus, and the stems stil
     check(quiet.allSatisfy { $0 == 0 } && quietRight.allSatisfy { $0 == 0 }, "lane B off: its stems are silent")
 }
 
+section("stems: a lane's stem mute and solo, solo across the mix") {
+    // Stored by name, and only when set: a mix without them reads as before.
+    var lane = LaneSettings()
+    let plain = String(decoding: try! JSONEncoder().encode(lane), as: UTF8.self)
+    check(!plain.contains("Stems"), "no stem switches, no keys: \(plain)")
+    lane.mutedStems = [.vocals, .drums]
+    lane.soloStems = [.bass]
+    let data = try! JSONEncoder().encode(lane)
+    let text = String(decoding: data, as: UTF8.self)
+    check(text.contains("\"mutedStems\":[\"drums\",\"vocals\"]") && text.contains("\"soloStems\":[\"bass\"]"), "by name, in stem order: \(text)")
+    check((try? JSONDecoder().decode(LaneSettings.self, from: data)) == lane, "read back as written")
+    let later = Data(#"{"muted":false,"solo":false,"mutedStems":["vocals","piano"]}"#.utf8)
+    check((try? JSONDecoder().decode(LaneSettings.self, from: later))?.mutedStems == [.vocals], "a stem from a later format is left out")
+    let older = Data(#"{"muted":true,"solo":false}"#.utf8)
+    let old = try? JSONDecoder().decode(LaneSettings.self, from: older)
+    check(old?.muted == true && old?.mutedStems.isEmpty == true && old?.soloStems.isEmpty == true, "an older mix's lane has none")
+
+    // Who is heard: muted on its lane, no; soloed anywhere, only the soloed.
+    var doc = MixDocument(laneCount: 3)
+    doc.lanes[1].mutedStems = [.vocals]
+    check(!doc.stemAudible(lane: 1, .vocals) && doc.stemAudible(lane: 1, .drums) && doc.stemAudible(lane: 0, .vocals),
+          "a stem muted on its lane only")
+    doc.lanes[0].soloStems = [.drums]
+    check(doc.anyStemSolo, "a stem soloed")
+    check(doc.stemAudible(lane: 0, .drums) && !doc.stemAudible(lane: 0, .bass), "on its lane, the soloed stem alone")
+    check(Stem.allCases.allSatisfy { !doc.stemAudible(lane: 1, $0) && !doc.stemAudible(lane: 2, $0) },
+          "every other lane silent: solo is across the mix")
+    doc.lanes[1].soloStems = [.vocals]
+    check(!doc.stemAudible(lane: 1, .vocals), "mute wins over solo on the same stem")
+
+    // The renderer: a stem muted on the lane is the stem muted on the clip;
+    // a stem soloed on the lane is the others muted on the clip; a lane a
+    // solo elsewhere silences is silent and needs no stems.
+    let n = engineTrack.frameCount
+    func noise(_ seed: UInt64, _ level: Float) -> AudioFrames {
+        var generator = SplitMix(seed: seed)
+        return AudioFrames(interleaved: (0..<2 * n).map { _ in generator.uniform(-level, level) })
+    }
+    let parts = StemAudio(drums: noise(61, 0.2), bass: noise(62, 0.1), vocals: noise(63, 0.15))
+    let track = UUID()
+    let grid = SourceGrid(bpm: 124.5, firstBeatSeconds: 0.731, durationSeconds: engineTrack.duration)
+    let lookup: GridLookup = { $0 == track ? grid : nil }
+    func plan(stems: Bool = true, _ configure: (inout MixDocument, UUID) -> Void) -> RenderPlan {
+        var doc = MixDocument(laneCount: 3)
+        let id = try! doc.addClip(trackID: track, grid: grid, lane: 1, startBeat: 0, grids: lookup)
+        doc.projectBPM = 127
+        doc.setTargetBPM(id, 127)
+        doc.setGain(id, -12)
+        configure(&doc, id)
+        return RenderPlan(document: doc, grids: lookup, audio: { $0 == track ? engineTrack : nil }, generation: 0,
+                          stemAudio: { id, _ in stems && id == track ? parts : nil })
+    }
+    let at = 44_100 * 3, span = 44_100 * 6
+    func near(_ a: [Float], _ b: [Float]) -> Float { zip(a, b).map { abs($0 - $1) }.max() ?? .infinity }
+
+    let full = renderMix(plan { _, _ in }, from: at, count: span)
+    let laneMuted = renderMix(plan { doc, _ in doc.lanes[1].mutedStems = [.vocals] }, from: at, count: span)
+    let clipMuted = renderMix(plan { doc, id in doc.setPartMuted(id, .vocals, true) }, from: at, count: span)
+    check(near(laneMuted, clipMuted) < 1e-6 && near(laneMuted, full) > 0.01,
+          "the vocals muted on the lane are the vocals muted on the clip: worst \(near(laneMuted, clipMuted))")
+
+    let laneSolo = renderMix(plan { doc, _ in doc.lanes[1].soloStems = [.bass] }, from: at, count: span)
+    let onlyBass = renderMix(plan { doc, id in
+        for stem in Stem.allCases where stem != .bass { doc.setPartMuted(id, stem, true) }
+    }, from: at, count: span)
+    check(near(laneSolo, onlyBass) < 1e-6, "the bass soloed on the lane is the bass alone: worst \(near(laneSolo, onlyBass))")
+
+    let elsewhere = plan(stems: false) { doc, _ in doc.lanes[0].soloStems = [.vocals] }
+    let quiet = renderMix(elsewhere, from: at, count: span)
+    check(quiet.allSatisfy { $0 == 0 }, "a stem soloed on another lane silences this one, stems or not")
+    var silenced = MixDocument(laneCount: 3)
+    _ = try! silenced.addClip(trackID: track, grid: grid, lane: 1, startBeat: 0, grids: lookup)
+    silenced.lanes[0].soloStems = [.vocals]
+    check(!silenced.playedParts(silenced.clips[0]).playsStems, "and it asks for no stems")
+    silenced.lanes[1].mutedStems = [.drums]
+    silenced.lanes[0].soloStems = []
+    check(silenced.playedParts(silenced.clips[0]).playsStems && silenced.clips[0].parts.isNeutral,
+          "a lane's stem mute needs the stems, and leaves the clip's own as they were")
+}
+
 section("stems: their waveforms, to the song's scale, and their cache names") {
     // A song of known parts: drums 0.2, bass 0.1, vocals 0.3 (true level,
     // stored at half), and other 0.4 - the song is the sum, peaking at 1.

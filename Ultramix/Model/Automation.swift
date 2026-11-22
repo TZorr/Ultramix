@@ -277,6 +277,12 @@ private nonisolated struct Droppable<Value: Decodable>: Decodable {
 nonisolated struct LaneSettings: Codable, Sendable, Equatable {
     var muted = false
     var solo = false
+    /// The lane's stems switched off, and those soloed, for every clip on
+    /// the lane (MixDocument.stemAudible). Solo works across the mix, as the
+    /// lanes' own does: a stem soloed anywhere silences every stem that is
+    /// not.
+    var mutedStems: Set<Stem> = []
+    var soloStems: Set<Stem> = []
     /// The lane's colour as "RRGGBB", chosen by the user; nil is the lane's
     /// own colour from `defaultColors`. In the mix rather than on the Mac, so
     /// a mix looks the same wherever it is opened and a change is undoable.
@@ -297,15 +303,37 @@ nonisolated struct LaneSettings: Codable, Sendable, Equatable {
 
     init() {}
 
-    enum CodingKeys: String, CodingKey { case muted, solo, color }
+    enum CodingKeys: String, CodingKey { case muted, solo, mutedStems, soloStems, color }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         muted = try c.decodeIfPresent(Bool.self, forKey: .muted) ?? false
         solo = try c.decodeIfPresent(Bool.self, forKey: .solo) ?? false
+        // By name, like the clips' stems; a name from a later format is left out.
+        mutedStems = Self.stems(try c.decodeIfPresent([String].self, forKey: .mutedStems))
+        soloStems = Self.stems(try c.decodeIfPresent([String].self, forKey: .soloStems))
         // A colour that is not one - hand-edited, or from a later format -
         // falls back to the lane's own rather than failing the whole mix.
         color = try c.decodeIfPresent(String.self, forKey: .color).flatMap(HexColor.normalized)
+    }
+
+    /// The stem switches only when one is set, so a mix without them reads
+    /// as it always did.
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(muted, forKey: .muted)
+        try c.encode(solo, forKey: .solo)
+        if !mutedStems.isEmpty { try c.encode(Self.names(mutedStems), forKey: .mutedStems) }
+        if !soloStems.isEmpty { try c.encode(Self.names(soloStems), forKey: .soloStems) }
+        try c.encodeIfPresent(color, forKey: .color)
+    }
+
+    private static func stems(_ names: [String]?) -> Set<Stem> {
+        Set((names ?? []).compactMap { name in Stem.allCases.first { $0.name == name } })
+    }
+
+    private static func names(_ stems: Set<Stem>) -> [String] {
+        Stem.allCases.filter(stems.contains).map(\.name)
     }
 }
 

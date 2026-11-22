@@ -3,9 +3,10 @@
 //  Ultramix
 //
 //  The main window: the library as a sidebar on the left, the timeline in the
-//  middle with its own bar above the ruler, the selected clip's inspector on
-//  the right, and the transport in the window's toolbar. Library and inspector
-//  can each be put away.
+//  middle with its own bar above the ruler, the selected clip's inspector
+//  beside the timeline on its left - or, with View › Inspector on the Left
+//  off, at the window's right edge - and the transport in the window's
+//  toolbar. Library and inspector can each be put away.
 //
 //  The beatgrid editor opens as a drawer under the timeline rather than a
 //  sheet over it: cue points and loops are made to be put into the timeline,
@@ -25,6 +26,10 @@ struct ContentView: View {
 
     @AppStorage("showLibrary") private var showLibrary = true
     @AppStorage("showInspector") private var showInspector = true
+    /// The inspector between the library and the timeline rather than at the
+    /// right edge: the clip's settings next to the clips, and the eye goes
+    /// one way across the window. A trial, switchable in the View menu.
+    @AppStorage(UltramixApp.inspectorOnLeftKey) private var inspectorOnLeft = true
     @AppStorage("pixelsPerBeat") private var pixelsPerBeat = 6.0
     @AppStorage("beatgridHeight") private var editorHeight = 320.0
     @AppStorage("followPlayhead") private var follow = true
@@ -43,10 +48,19 @@ struct ContentView: View {
                 .windowSurface()
                 .navigationSplitViewColumnWidth(min: 300, ideal: 320, max: 460)
         } detail: {
-            detail
-                .navigationSplitViewColumnWidth(min: 360, ideal: 1000)
+            HStack(spacing: 0) {
+                if inspectorOnLeft && showInspector {
+                    ClipInspector(session: session, library: library)
+                        .windowSurface()
+                        .frame(width: 300)
+                    Divider()
+                }
+                detail
+            }
+            .navigationSplitViewColumnWidth(min: 360, ideal: 1000)
         }
-        .inspector(isPresented: $showInspector) {
+        .inspector(isPresented: Binding(get: { showInspector && !inspectorOnLeft },
+                                        set: { if !inspectorOnLeft { showInspector = $0 } })) {
             ClipInspector(session: session, library: library)
                 .windowSurface()
                 .inspectorColumnWidth(min: 270, ideal: 300, max: 380)
@@ -81,7 +95,7 @@ struct ContentView: View {
                 Button {
                     showInspector.toggle()
                 } label: {
-                    Label("Inspector", systemImage: "sidebar.trailing")
+                    Label("Inspector", systemImage: inspectorOnLeft ? "sidebar.squares.leading" : "sidebar.trailing")
                 }
                 .help("Show or hide the clip inspector")
             }

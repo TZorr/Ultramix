@@ -36,7 +36,8 @@ struct ClipDrawItem {
     let anchorBeat: Int
     /// In the clip's own beats; add `anchorBeat` for the timeline.
     let automation: ClipAutomation
-    /// Its stems, drawn as rows under it when its lane is expanded.
+    /// Its stems as they play - the lane's stem switches on top - drawn as
+    /// rows under it when its lane is expanded.
     let parts: ClipParts
     let expanded: Bool
     /// The stems' waveforms, in the order of `Stem.allCases`; nil until the
@@ -149,7 +150,7 @@ struct TimelineSnapshot {
                 selected: session.selection.contains(clip.id), muted: clip.muted,
                 locked: clip.locked, looping: clip.looping, outOfRange: outOfRange.contains(clip.id), gainDB: clip.gainDB,
                 pitch: clip.pitch, anchorBeat: clip.anchorBeat, automation: clip.automation,
-                parts: clip.parts, expanded: session.expandedLanes.contains(clip.lane),
+                parts: session.document.playedParts(clip), expanded: session.expandedLanes.contains(clip.lane),
                 stemWaveforms: library.stemWaveforms[clip.trackID], separating: library.separating[clip.trackID],
                 separated: track.stems?.isCurrent == true,
                 selectedPart: session.selection.contains(clip.id) ? session.selectedPart : nil))

@@ -98,7 +98,7 @@ final class AppModel {
                         if !clip.pitch.isNone {
                             wanted.insert(Library.ShiftKey(track: clip.trackID, pitch: clip.pitch))
                         }
-                        if clip.parts.playsStems {
+                        if s.document.playedParts(clip).playsStems {
                             wanted.insert(Library.ShiftKey(track: clip.trackID, pitch: clip.pitch, stems: true))
                         }
                     }

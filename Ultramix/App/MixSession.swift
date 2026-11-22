@@ -672,6 +672,30 @@ final class MixSession {
         perform { $0.lanes[lane].solo.toggle() }
     }
 
+    /// A lane's stem switched off or on, for every clip on the lane.
+    func toggleStemMute(_ lane: Int, _ stem: Stem) {
+        perform { $0.lanes[lane].mutedStems.formSymmetricDifference([stem]) }
+        separateForStemSwitches()
+    }
+
+    /// A lane's stem soloed or let go of. Across the mix, as a lane's solo
+    /// is: while any stem is soloed, only soloed stems are heard.
+    func toggleStemSolo(_ lane: Int, _ stem: Stem) {
+        perform { $0.lanes[lane].soloStems.formSymmetricDifference([stem]) }
+        separateForStemSwitches()
+    }
+
+    /// The songs the stem switches now need apart and that never were: a
+    /// switch is asked for like a click in a stem row, so it separates. A
+    /// lane silenced as a whole needs no stems and starts nothing.
+    private func separateForStemSwitches() {
+        let document = document
+        let needed = document.clips
+            .filter { !$0.muted && document.playedParts($0).playsStems && !library.hasStems($0.trackID) }
+            .map(\.trackID)
+        if !needed.isEmpty { library.separate(Set(needed)) }
+    }
+
     /// Mute and solo resolved into the renderer's lane mask: a lane is heard
     /// when it is not muted and either nothing is soloed or it is.
     var laneMask: Int {
@@ -811,7 +835,7 @@ final class MixSession {
         // stems were deleted stays without them. Such a clip plays the whole
         // song; a bounce separates what it needs (prepareAudio).
         let stems = ordered
-            .filter { $0.parts.playsStems && library.hasStems($0.trackID) }
+            .filter { document.playedParts($0).playsStems && library.hasStems($0.trackID) }
             .map { Library.ShiftKey(track: $0.trackID, pitch: $0.pitch, stems: true) }
             .filter { library.stems(for: $0.track, pitch: $0.pitch) == nil }
         library.prepareShifts(shifts + stems)
@@ -838,7 +862,8 @@ final class MixSession {
             message = "Not bounced: the pitch shift of \(names.joined(separator: ", ")) could not be rendered."
             return false
         }
-        let stemClips = document.clips.filter { !$0.muted && $0.parts.playsStems }
+        let document = document
+        let stemClips = document.clips.filter { !$0.muted && document.playedParts($0).playsStems }
         let unseparated = await library.readySeparations(Set(stemClips.map(\.trackID)))
         guard unseparated.isEmpty else {
             let names = unseparated.compactMap { library.track($0)?.displayName }.sorted()

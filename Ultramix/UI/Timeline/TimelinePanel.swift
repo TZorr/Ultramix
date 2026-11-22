@@ -1202,12 +1202,26 @@ struct LaneHeaders: View {
             .overlay(alignment: .top) { Divider() }
             if expanded {
                 ForEach(Stem.allCases, id: \.self) { stem in
-                    Text(stem.name.capitalized)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .padding(.leading, 26)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-                        .overlay(alignment: .top) { Divider().opacity(0.5) }
+                    // The stem's own mute and solo, for every clip on the
+                    // lane; solo across the mix, as the lane's own is.
+                    HStack(spacing: 3) {
+                        Text(stem.name.capitalized)
+                            .font(.caption2)
+                            .foregroundStyle(session.document.stemAudible(lane: lane, stem) ? .secondary : .tertiary)
+                        Spacer(minLength: 4)
+                        LaneToggle(title: "M", on: state.mutedStems.contains(stem), tint: .yellow, compact: true) {
+                            session.toggleStemMute(lane, stem)
+                        }
+                        .help("Mute the \(stem.name) of every clip on lane \(LaneStyle.number(lane))")
+                        LaneToggle(title: "S", on: state.soloStems.contains(stem), tint: .green, compact: true) {
+                            session.toggleStemSolo(lane, stem)
+                        }
+                        .help("Solo the \(stem.name) of lane \(LaneStyle.number(lane)): while any stem is soloed, only soloed stems are heard, on every lane")
+                    }
+                    .padding(.leading, 26)
+                    .padding(.trailing, 6)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                    .overlay(alignment: .top) { Divider().opacity(0.5) }
                 }
             }
         }
@@ -1406,13 +1420,15 @@ struct LaneToggle: View {
     let title: String
     let on: Bool
     let tint: Color
+    /// Smaller in a stem row, which can be as low as 18 points.
+    var compact = false
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
             Text(title)
-                .font(.system(size: 10, weight: .bold))
-                .frame(width: 22, height: 17)
+                .font(.system(size: compact ? 9 : 10, weight: .bold))
+                .frame(width: compact ? 18 : 22, height: compact ? 14 : 17)
                 .foregroundStyle(on ? Color.black : Color.secondary)
                 .background(RoundedRectangle(cornerRadius: 4).fill(on ? tint : Color.secondary.opacity(0.15)))
         }

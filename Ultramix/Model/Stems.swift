@@ -180,3 +180,32 @@ nonisolated struct TrackStems: Codable, Sendable, Equatable {
     /// Made by the separator this version of Ultramix runs.
     var isCurrent: Bool { tag == StemSeparator.tag }
 }
+
+// MARK: - The lanes' stem switches
+
+extension MixDocument {
+    /// Whether any lane has a stem soloed: then only soloed stems are heard,
+    /// on every lane - solo works across the mix, as the lanes' own does.
+    var anyStemSolo: Bool { lanes.contains { !$0.soloStems.isEmpty } }
+
+    /// Whether a lane's stem is heard as far as the lanes' stem switches go:
+    /// not muted there, and soloed if any stem is. Lane mute and solo come on
+    /// top of this, in the lane mask.
+    func stemAudible(lane: Int, _ stem: Stem) -> Bool {
+        let settings = lanes.indices.contains(lane) ? lanes[lane] : LaneSettings()
+        return !settings.mutedStems.contains(stem) && (!anyStemSolo || settings.soloStems.contains(stem))
+    }
+
+    /// A clip's stems as they play: its own, with the stems its lane's
+    /// switches silence muted on top. What the renderer, the stem
+    /// preparation and a bounce go by - a stem muted on the lane needs the
+    /// stems like one muted on the clip, and a lane silenced as a whole
+    /// needs none.
+    func playedParts(_ clip: Clip) -> ClipParts {
+        var parts = clip.parts
+        for stem in Stem.allCases where !stemAudible(lane: clip.lane, stem) {
+            parts[stem].muted = true
+        }
+        return parts
+    }
+}

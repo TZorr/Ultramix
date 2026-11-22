@@ -19,6 +19,7 @@ struct UltramixApp: App {
     static let scannerWindow = "scanner"
     static let helpWindow = "help"
     static let settingsWindow = "settings"
+    static let inspectorOnLeftKey = "inspectorOnLeft"
 
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @State private var model = AppModel()
@@ -27,6 +28,7 @@ struct UltramixApp: App {
     @AppStorage("appearance") private var appearance: AppAppearance = .dark
     /// Empty while the system's own accent is in use; see AppAccent.
     @AppStorage("accentColor") private var accentHex = AppAccent.system
+    @AppStorage(UltramixApp.inspectorOnLeftKey) private var inspectorOnLeft = true
 
     var body: some Scene {
         Window("Ultramix", id: "main") {
@@ -53,6 +55,8 @@ struct UltramixApp: App {
                         Label(option.label, systemImage: option.systemImage).tag(option)
                     }
                 }
+                Divider()
+                Toggle("Inspector on the Left", isOn: $inspectorOnLeft)
                 Divider()
             }
         }
@@ -91,6 +95,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// No alert sound for keys nobody wants (see SilentResponder): every
     /// window gets the silent end of the chain when it becomes key.
     func applicationDidFinishLaunching(_ notification: Notification) {
+        TitleBarDoubleClick.install()
         for window in NSApp.windows { SilentResponder.install(in: window) }
         keyWindowObserver = NotificationCenter.default.addObserver(
             forName: NSWindow.didBecomeKeyNotification, object: nil, queue: .main

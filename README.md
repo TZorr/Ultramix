@@ -27,14 +27,17 @@ unless you ask it to.
 
 ## What it does
 
-- **The window** — the library as a sidebar on the left, the timeline in
-  the middle, and an inspector on the right for whatever is picked: a clip
-  in sections (grid, tempo, level, key, transition) or a transition bar.
+- **The window** — the library as a sidebar on the left, then the inspector
+  for whatever is picked - a clip in sections (grid, tempo, level, key,
+  transition) or a transition bar - and the timeline beside it; View ›
+  Inspector on the Left off moves the inspector to the right edge.
   The toolbar's middle holds the transport, one readout of bar, time and
   BPM, and the output level in dBFS and LUFS-S. The tool, the Move mode,
   Follow Playhead and zoom sit in a bar right above the ruler; a status line
   runs along the bottom. Library and inspector can each be put away, and
-  Settings › Appearance can draw the window without transparency.
+  Settings › Appearance can draw the window without transparency. A
+  double-click on the title bar fills the screen between menu bar and Dock,
+  as System Settings › Desktop & Dock says.
 - **Library** — import files or whole folders (MP3, AAC/M4A, WAV, AIFF,
   FLAC). Every track is analysed in the background for tempo, beatgrid and
   first downbeat, and gets a peak/RMS waveform.
@@ -135,7 +138,10 @@ unless you ask it to.
   waveform. Every automation tool works in a stem row as in the clip's own -
   a fade on the vocals alone, a low-pass on the drums, pan on the bass - and
   picked on a stem row, Gain and Mute (and **M**) work on that stem; the
-  clip's own row works on the four together. Where the clip sits, its length,
+  clip's own row works on the four together. Each stem row has its own **M**
+  and **S** for every clip on the lane; solo works across the mix, as a
+  lane's does, so a stem soloed anywhere leaves only soloed stems heard.
+  Where the clip sits, its length,
   tempo and key stay the clip's, so the stems always add up to the song. A
   song is separated only when you ask - a click in a clip's stem rows, or
   right-click › Separate Stems - with Demucs v4 as a Core ML model, a few
